@@ -2,13 +2,14 @@
 name = "nomadnet-rs"
 version = "0.1.0"
 edition = "2021"
-description = "Standalone Rust library for NomadNet Node Hosting over Reticulum"
+description = "Rust library for NomadNet Node Hosting and browsing over Reticulum"
 license = "MIT"
-repository = "https://github.com/TeskesLab/LXIRC"
+repository = "https://github.com/TeskesLab/nomadnet-rs"
 authors = ["Teske's Lab", "Lucas Teske <lucas@teske.com.br>", "Mister Maluco <teskeslab@lucasteske.dev>"]
-keywords = ["nomadnet", "reticulum", "rns", "mesh-network"]
-categories = ["network-programming"]
+keywords = ["nomadnet", "reticulum", "rns", "mesh-network", "nomad"]
+categories = ["network-programming", "asynchronous"]
 readme = "README.md"
+rust-version = "1.75"
 
 [dependencies]
 rns-core = "0.1.8"
@@ -19,3 +20,15 @@ tokio-util = "0.7"
 thiserror = "1"
 tracing = "0.1"
 hex = "0.4"
+clap = { version = "4", features = ["derive"], optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+notify = { version = "8", optional = true }
+
+[features]
+default = []
+serve = ["dep:clap", "dep:tracing-subscriber", "dep:notify"]
+
+[[bin]]
+name = "nomadnet-serve"
+path = "src/bin/nomadnet-serve/main.rs"
+required-features = ["serve"]

@@ -7,7 +7,7 @@ pub const MAX_DIRECTORY_ENTRIES: usize = 256;
 pub const NNN_DESTINATION_TYPE: &str = "nnn";
 pub const LXMF_DESTINATION_TYPE: &str = "lxmf";
 
-#[derive(Debug, Clone)]
+/// Configuration for creating a [`NomadNode`](crate::NomadNode).
 pub struct NodeConfig {
     pub identity_prv: [u8; 64],
     pub identity_pub: [u8; 32],
@@ -26,7 +26,7 @@ impl Default for NodeConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+/// A discovered NomadNet node in the directory.
 pub struct DirectoryEntry {
     pub dest_hash: [u8; 16],
     pub identity_hash: [u8; 16],
@@ -35,7 +35,7 @@ pub struct DirectoryEntry {
     pub last_seen: f64,
 }
 
-#[derive(Debug, Clone)]
+/// Events emitted by [`NomadBrowser`](crate::NomadBrowser).
 pub enum BrowseEvent {
     PageReceived {
         dest_hash: [u8; 16],

@@ -4,6 +4,11 @@ use tracing::debug;
 
 use crate::types::{DirectoryEntry, MAX_DIRECTORY_ENTRIES};
 
+/// Tracks discovered NomadNet nodes from RNS transport announces.
+///
+/// Feed it [`AnnouncedIdentity`] events from your RNS callbacks. Only announces
+/// whose destination hash matches `nomadnetwork.node` for the announcer's
+/// identity are kept.
 pub struct NomadDirectory {
     entries: Vec<DirectoryEntry>,
 }

@@ -13,6 +13,11 @@ struct PendingRequest {
     path: String,
 }
 
+/// Fetches pages from remote NomadNet nodes via RNS Link request/response.
+///
+/// Maintains link state and emits [`BrowseEvent`]s through a channel. Use
+/// [`NomadBrowser::fetch`] to request a page, then listen on the events channel
+/// for the response.
 pub struct NomadBrowser {
     pending: Arc<Mutex<HashMap<[u8; 16], PendingRequest>>>,
     link_to_dest: Arc<Mutex<HashMap<[u8; 16], [u8; 16]>>>,

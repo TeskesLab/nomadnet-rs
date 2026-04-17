@@ -10,8 +10,11 @@ use tracing::{debug, info, warn};
 use crate::micron::MicronBuilder;
 use crate::types::{NomadError, NodeConfig};
 
-/// Thread-safe page cache that handlers read from (sync) and the application
-/// writes to (async or sync).  Cloning is cheap — it's `Arc` under the hood.
+/// Thread-safe page cache for NomadNet pages.
+///
+/// Handlers (running synchronously on the RNS driver thread) read from the cache,
+/// while the application writes to it from async or sync context. Cloning is cheap
+/// — it's `Arc` under the hood.
 #[derive(Clone, Debug)]
 pub struct PageCache {
     inner: Arc<RwLock<HashMap<String, Vec<u8>>>>,
@@ -63,6 +66,13 @@ fn build_404_page(path: &str, nomad_address: &str) -> Vec<u8> {
     page.build().into_bytes()
 }
 
+/// A NomadNet node that serves pages via RNS Link request/response.
+///
+/// Register page paths at construction time. Handlers read from a shared
+/// [`PageCache`] synchronously — populate the cache from your async context
+/// (e.g. a periodic timer or state-change hook).
+///
+/// A built-in `/page/test.mu` handler is always registered for debugging.
 pub struct NomadNode {
     dest_hash: [u8; 16],
     identity_hash: [u8; 16],

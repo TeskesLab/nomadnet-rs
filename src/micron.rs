@@ -1,5 +1,10 @@
 use std::fmt::{self, Write};
 
+/// Fluent builder for [NomadNet Micron markup](https://markqvist.github.io/Reticulum/network/nomadnet.html).
+///
+/// Produces the text format consumed by NomadNet clients (MeshChat, etc.).
+/// All methods return `&mut Self` for chaining. Call [`build`](Self::build)
+/// to produce the final markup string.
 pub struct MicronBuilder {
     inner: String,
     directives_written: bool,
