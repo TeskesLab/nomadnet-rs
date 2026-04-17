@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use clap::Parser;
 use config::RnsConfig;
-use nomadnet_rs::{MicronBuilder, NomadNode, NodeConfig, PageCache};
-use rns_crypto::identity::Identity;
+use nomadnet_rs::{MicronBuilder, NodeConfig, NomadNode, PageCache};
 use rns_core::transport::types::IngressControlConfig;
+use rns_crypto::identity::Identity;
 use rns_net::{
     Callbacks, InterfaceConfig as RnsInterfaceConfig, NodeConfig as RnsNodeConfig, RnsNode,
     TcpClientConfig, TcpServerConfig, UdpConfig, MODE_FULL,
@@ -16,7 +16,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 #[derive(Parser, Debug)]
-#[command(name = "nomadnet-serve", about = "Serve static .mu pages as a NomadNet node")]
+#[command(
+    name = "nomadnet-serve",
+    about = "Serve static .mu pages as a NomadNet node"
+)]
 struct Args {
     #[arg(long, default_value = "~/.nomadnet-serve/identity")]
     identity: String,
@@ -60,7 +63,9 @@ fn expand_path(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn load_or_create_identity(path: &Path) -> Result<(Identity, [u8; 64], [u8; 32]), Box<dyn std::error::Error>> {
+fn load_or_create_identity(
+    path: &Path,
+) -> Result<(Identity, [u8; 64], [u8; 32]), Box<dyn std::error::Error>> {
     if path.exists() {
         let bytes = std::fs::read(path)?;
         let prv = if bytes.len() == 64 {
@@ -78,13 +83,13 @@ fn load_or_create_identity(path: &Path) -> Result<(Identity, [u8; 64], [u8; 32])
                 arr.copy_from_slice(&decoded);
                 arr
             } else {
-                return Err(
-                    "Identity file must be 64 bytes (binary) or 128 hex characters".into(),
-                );
+                return Err("Identity file must be 64 bytes (binary) or 128 hex characters".into());
             }
         };
         let identity = Identity::from_private_key(&prv);
-        let full_pub = identity.get_public_key().ok_or("Failed to get public key")?;
+        let full_pub = identity
+            .get_public_key()
+            .ok_or("Failed to get public key")?;
         let mut pub_arr = [0u8; 32];
         pub_arr.copy_from_slice(&full_pub[32..64]);
         Ok((identity, prv, pub_arr))
@@ -93,7 +98,9 @@ fn load_or_create_identity(path: &Path) -> Result<(Identity, [u8; 64], [u8; 32])
             std::fs::create_dir_all(parent)?;
         }
         let identity = Identity::new(&mut rns_crypto::OsRng);
-        let full_pub = identity.get_public_key().ok_or("Failed to get public key")?;
+        let full_pub = identity
+            .get_public_key()
+            .ok_or("Failed to get public key")?;
         let mut pub_arr = [0u8; 32];
         pub_arr.copy_from_slice(&full_pub[32..64]);
         let prv_bytes = identity
@@ -128,7 +135,11 @@ fn build_interfaces(rns_config_path: &Option<PathBuf>) -> Vec<RnsInterfaceConfig
     let rns_config = match RnsConfig::from_file(&config_path) {
         Ok(c) => c,
         Err(e) => {
-            warn!("Failed to parse RNS config {}: {}", config_path.display(), e);
+            warn!(
+                "Failed to parse RNS config {}: {}",
+                config_path.display(),
+                e
+            );
             return Vec::new();
         }
     };
@@ -178,8 +189,14 @@ fn build_interfaces(rns_config_path: &Option<PathBuf>) -> Vec<RnsInterfaceConfig
             }
             config::InterfaceType::Udp { bind_addr } => {
                 let parts: Vec<&str> = bind_addr.splitn(2, ':').collect();
-                let listen_ip = parts.first().map(|s| s.to_string()).unwrap_or_else(|| "0.0.0.0".to_string());
-                let listen_port = parts.get(1).and_then(|p| p.parse::<u16>().ok()).unwrap_or(4242);
+                let listen_ip = parts
+                    .first()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "0.0.0.0".to_string());
+                let listen_port = parts
+                    .get(1)
+                    .and_then(|p| p.parse::<u16>().ok())
+                    .unwrap_or(4242);
                 interfaces.push(RnsInterfaceConfig {
                     name: iface.name.clone(),
                     type_name: "UDPInterface".to_string(),
@@ -211,7 +228,11 @@ fn scan_pages(pages_dir: &Path) -> Vec<String> {
     let entries = match std::fs::read_dir(pages_dir) {
         Ok(e) => e,
         Err(err) => {
-            warn!("Failed to read pages directory {}: {}", pages_dir.display(), err);
+            warn!(
+                "Failed to read pages directory {}: {}",
+                pages_dir.display(),
+                err
+            );
             return pages;
         }
     };
@@ -349,7 +370,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Loaded {} pages", page_cache.paths().len());
 
     let watch_rx = if args.watch {
-        use notify::{RecursiveMode, Watcher, recommended_watcher};
+        use notify::{recommended_watcher, RecursiveMode, Watcher};
         let (tx, rx) = std::sync::mpsc::channel();
         let mut watcher = recommended_watcher(tx)?;
         watcher.watch(&pages_dir, RecursiveMode::NonRecursive)?;
@@ -364,8 +385,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match rx.recv_timeout(std::time::Duration::from_secs(1)) {
                 Ok(Ok(event)) => {
                     if let notify::EventKind::Modify(_)
-                        | notify::EventKind::Create(_)
-                        | notify::EventKind::Remove(_) = event.kind
+                    | notify::EventKind::Create(_)
+                    | notify::EventKind::Remove(_) = event.kind
                     {
                         populate_cache(&page_cache, &pages_dir, &nomad_address);
                         info!("Page cache refreshed ({} pages)", page_cache.paths().len());

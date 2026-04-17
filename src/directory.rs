@@ -61,7 +61,7 @@ impl NomadDirectory {
 
             if self.entries.len() > MAX_DIRECTORY_ENTRIES {
                 self.entries
-                    .sort_by(|a, b| a.last_seen.partial_cmp(&b.last_seen).unwrap());
+                    .sort_by(|a, b| b.last_seen.total_cmp(&a.last_seen));
                 self.entries.truncate(MAX_DIRECTORY_ENTRIES);
             }
         }
@@ -177,6 +177,33 @@ mod tests {
             dir.handle_announce(&announced);
         }
         assert!(dir.len() <= MAX_DIRECTORY_ENTRIES);
+    }
+
+    #[test]
+    fn test_eviction_keeps_most_recent_entries() {
+        let mut dir = NomadDirectory::new();
+
+        for i in 0..(MAX_DIRECTORY_ENTRIES + 1) {
+            let mut identity = [0u8; 16];
+            identity[0..2].copy_from_slice(&(i as u16).to_le_bytes());
+            let mut announced = make_announced(identity, Some(format!("Node{i}").into_bytes()));
+            announced.received_at = i as f64;
+            dir.handle_announce(&announced);
+        }
+
+        let oldest_identity = {
+            let mut id = [0u8; 16];
+            id[0..2].copy_from_slice(&0u16.to_le_bytes());
+            id
+        };
+        let newest_identity = {
+            let mut id = [0u8; 16];
+            id[0..2].copy_from_slice(&(MAX_DIRECTORY_ENTRIES as u16).to_le_bytes());
+            id
+        };
+
+        assert!(dir.get_node_by_identity(&oldest_identity).is_none());
+        assert!(dir.get_node_by_identity(&newest_identity).is_some());
     }
 
     #[test]

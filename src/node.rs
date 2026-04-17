@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::micron::MicronBuilder;
-use crate::types::{NomadError, NodeConfig};
+use crate::types::{NodeConfig, NomadError};
 
 /// Thread-safe page cache for NomadNet pages.
 ///
@@ -29,7 +29,10 @@ impl PageCache {
 
     /// Insert or update a page.  Called from the async main loop.
     pub fn set(&self, path: &str, content: Vec<u8>) {
-        self.inner.write().unwrap().insert(path.to_string(), content);
+        self.inner
+            .write()
+            .unwrap()
+            .insert(path.to_string(), content);
     }
 
     /// Read a page.  Called from sync request handlers on the RNS driver thread.
@@ -60,7 +63,9 @@ fn build_404_page(path: &str, nomad_address: &str) -> Vec<u8> {
     page.heading(1, "404 — Page Not Found");
     page.divider();
     let escaped = MicronBuilder::escape(path);
-    page.text_raw_line(&format!("The page `{escaped}` does not exist on this node."));
+    page.text_raw_line(&format!(
+        "The page `{escaped}` does not exist on this node."
+    ));
     page.blank_line();
     page.link("Back to index", &format!("{nomad_address}:/page/index.mu"));
     page.build().into_bytes()
@@ -112,7 +117,19 @@ impl NomadNode {
         let sig_prv_bytes: [u8; 32] = config.identity_prv[32..64]
             .try_into()
             .map_err(|_| NomadError::DestinationRegistrationFailed)?;
-        let sig_pub_bytes: [u8; 32] = config.identity_pub;
+        let derived_pub = identity
+            .get_public_key()
+            .ok_or(NomadError::DestinationRegistrationFailed)?;
+        let sig_pub_bytes: [u8; 32] = derived_pub[32..64]
+            .try_into()
+            .map_err(|_| NomadError::DestinationRegistrationFailed)?;
+
+        if config.identity_pub != sig_pub_bytes {
+            return Err(NomadError::IdentityKeyMismatch {
+                expected_sig_pub_hex: hex::encode(sig_pub_bytes),
+                provided_sig_pub_hex: hex::encode(config.identity_pub),
+            });
+        }
 
         let inbound_dest = Destination::single_in("nomadnetwork", &["node"], identity_hash);
 
@@ -223,11 +240,8 @@ impl NomadNode {
         cancel: CancellationToken,
     ) -> Result<(), NomadError> {
         let identity = Identity::from_private_key(&self.identity_prv);
-        let dest = Destination::single_in(
-            "nomadnetwork",
-            &["node"],
-            IdentityHash(self.identity_hash),
-        );
+        let dest =
+            Destination::single_in("nomadnetwork", &["node"], IdentityHash(self.identity_hash));
         let node_name = self.node_name.clone();
         let dest_hash = self.dest_hash;
         let interval_secs = self.announce_interval_secs;

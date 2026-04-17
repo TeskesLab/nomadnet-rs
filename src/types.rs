@@ -76,4 +76,12 @@ pub enum NomadError {
 
     #[error("Destination registration failed")]
     DestinationRegistrationFailed,
+
+    #[error(
+        "Identity public key mismatch: expected {expected_sig_pub_hex}, got {provided_sig_pub_hex}"
+    )]
+    IdentityKeyMismatch {
+        expected_sig_pub_hex: String,
+        provided_sig_pub_hex: String,
+    },
 }
