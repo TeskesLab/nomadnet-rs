@@ -10,6 +10,10 @@ use tracing::{debug, info, warn};
 use crate::micron::MicronBuilder;
 use crate::types::{NodeConfig, NomadError};
 
+pub const MAX_RESPONSE_BYTES: usize = 350;
+pub const MAX_PAGES_PER_FILE: usize = 200;
+pub const CHUNK_TARGET_BYTES: usize = 220;
+
 /// Thread-safe page cache for NomadNet pages.
 ///
 /// Handlers (running synchronously on the RNS driver thread) read from the cache,
@@ -68,6 +72,87 @@ fn build_404_page(path: &str, nomad_address: &str) -> Vec<u8> {
     ));
     page.blank_line();
     page.link("Back to index", &format!("{nomad_address}:/page/index.mu"));
+    page.build().into_bytes()
+}
+
+pub fn paginate_path(base_path: &str, page_num: usize) -> String {
+    if page_num <= 1 {
+        return base_path.to_string();
+    }
+    let stem = base_path.strip_suffix(".mu").unwrap_or(base_path);
+    format!("{stem}/{page_num}.mu")
+}
+
+#[cfg(test)]
+fn base_path_from_paginated(path: &str) -> (String, Option<usize>) {
+    let stem = path.strip_suffix(".mu").unwrap_or(path);
+    if let Some(idx) = stem.rfind('/') {
+        let base_stem = &stem[..idx];
+        let page_str = &stem[idx + 1..];
+        if let Ok(page_num) = page_str.parse::<usize>() {
+            if (2..=MAX_PAGES_PER_FILE).contains(&page_num) {
+                return (format!("{base_stem}.mu"), Some(page_num));
+            }
+        }
+    }
+    (path.to_string(), None)
+}
+
+pub fn split_into_chunks(content: &str, target_bytes: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    for line in content.lines() {
+        if current.len() + line.len() + 1 > target_bytes && !current.is_empty() {
+            chunks.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push('\n');
+        }
+        current.push_str(line);
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    if chunks.is_empty() {
+        chunks.push(String::new());
+    }
+    chunks
+}
+
+#[cfg(test)]
+fn build_paginated_page(
+    chunk: &str,
+    page_num: usize,
+    total_pages: usize,
+    base_path: &str,
+    nomad_address: &str,
+) -> Vec<u8> {
+    let mut page = MicronBuilder::new();
+    page.cache_directive(0);
+    page.text_raw_line(chunk);
+
+    if total_pages > 1 {
+        page.blank_line();
+        page.divider();
+        page.blank_line();
+
+        if page_num > 1 {
+            let prev_link = paginate_path(base_path, page_num - 1);
+            page.link("<< Previous page", &format!("{nomad_address}:{prev_link}"));
+        } else {
+            page.text_raw_line("  ");
+        }
+
+        page.text_raw_line(&format!("  Page {page_num} of {total_pages}"));
+
+        if page_num < total_pages {
+            let next_link = paginate_path(base_path, page_num + 1);
+            page.link("Next page >>", &format!("{nomad_address}:{next_link}"));
+        } else {
+            page.text_raw_line("  ");
+        }
+    }
+
     page.build().into_bytes()
 }
 
@@ -142,11 +227,10 @@ impl NomadNode {
         let page_cache = PageCache::new();
         let nomad_address = hex::encode(dest_hash);
 
-        // Register a handler for each path — reads from the shared cache.
         for path in paths {
             let cache = page_cache.clone();
             let path_owned = path.to_string();
-            let nomad_address = nomad_address.clone();
+            let nomad_addr = nomad_address.clone();
             node.register_request_handler(
                 path,
                 None,
@@ -159,7 +243,7 @@ impl NomadNode {
                     );
                     let page = cache.get(&path_owned).unwrap_or_else(|| {
                         warn!("NomadNode: cache miss for {}, returning 404", path_owned);
-                        build_404_page(&path_owned, &nomad_address)
+                        build_404_page(req_path, &nomad_addr)
                     });
                     Some(page)
                 },
@@ -282,5 +366,129 @@ impl NomadNode {
         });
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_paginate_path_base() {
+        assert_eq!(paginate_path("/page/foo.mu", 1), "/page/foo.mu");
+    }
+
+    #[test]
+    fn test_paginate_path_subpages() {
+        assert_eq!(paginate_path("/page/foo.mu", 2), "/page/foo/2.mu");
+        assert_eq!(paginate_path("/page/foo.mu", 5), "/page/foo/5.mu");
+        assert_eq!(paginate_path("/page/bar baz.mu", 3), "/page/bar baz/3.mu");
+    }
+
+    #[test]
+    fn test_base_path_from_paginated() {
+        assert_eq!(
+            base_path_from_paginated("/page/foo/2.mu"),
+            ("/page/foo.mu".to_string(), Some(2))
+        );
+        assert_eq!(
+            base_path_from_paginated("/page/foo/10.mu"),
+            ("/page/foo.mu".to_string(), Some(10))
+        );
+        assert_eq!(
+            base_path_from_paginated("/page/foo.mu"),
+            ("/page/foo.mu".to_string(), None)
+        );
+        assert_eq!(
+            base_path_from_paginated("/page/foo/1.mu"),
+            ("/page/foo/1.mu".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn test_split_into_chunks_small() {
+        let content = "line1\nline2";
+        let chunks = split_into_chunks(content, 280);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], "line1\nline2");
+    }
+
+    #[test]
+    fn test_split_into_chunks_splits_at_line_boundary() {
+        let mut content = String::new();
+        for i in 0..20 {
+            content.push_str(&format!("line {i:04} — some content here\n"));
+        }
+        let chunks = split_into_chunks(&content, 100);
+        assert!(chunks.len() > 1, "expected multiple chunks");
+        for chunk in &chunks {
+            assert!(chunk.len() <= 150, "chunk too large: {} bytes", chunk.len());
+        }
+        let reassembled: String = chunks.join("\n");
+        for i in 0..20 {
+            assert!(
+                reassembled.contains(&format!("line {i:04}")),
+                "missing line {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_paginated_page_single() {
+        let page = build_paginated_page("Hello", 1, 1, "/page/test.mu", "abcd1234");
+        let text = String::from_utf8_lossy(&page);
+        assert!(text.contains("Hello"));
+        assert!(!text.contains("Previous"), "no prev link on single page");
+        assert!(!text.contains("Next"), "no next link on single page");
+    }
+
+    #[test]
+    fn test_build_paginated_page_first_of_many() {
+        let page = build_paginated_page("content", 1, 3, "/page/big.mu", "abcd1234");
+        let text = String::from_utf8_lossy(&page);
+        assert!(text.contains("content"));
+        assert!(!text.contains("Previous"), "no prev on first page");
+        assert!(text.contains("Next page >>"));
+        assert!(text.contains("Page 1 of 3"));
+    }
+
+    #[test]
+    fn test_build_paginated_page_middle() {
+        let page = build_paginated_page("content", 2, 3, "/page/big.mu", "abcd1234");
+        let text = String::from_utf8_lossy(&page);
+        assert!(text.contains("<< Previous page"));
+        assert!(text.contains("Next page >>"));
+        assert!(text.contains("Page 2 of 3"));
+    }
+
+    #[test]
+    fn test_build_paginated_page_last() {
+        let page = build_paginated_page("content", 3, 3, "/page/big.mu", "abcd1234");
+        let text = String::from_utf8_lossy(&page);
+        assert!(text.contains("<< Previous page"));
+        assert!(!text.contains("Next"), "no next on last page");
+        assert!(text.contains("Page 3 of 3"));
+    }
+
+    #[test]
+    fn test_paginated_pages_within_max_response() {
+        let mut big_content = String::new();
+        for i in 0..50 {
+            big_content.push_str(&format!(
+                "This is line number {i} with some padding text.\n"
+            ));
+        }
+        let chunks = split_into_chunks(&big_content, CHUNK_TARGET_BYTES);
+        for (idx, chunk) in chunks.iter().enumerate() {
+            let page =
+                build_paginated_page(chunk, idx + 1, chunks.len(), "/page/big.mu", "abcd1234");
+            assert!(
+                page.len() <= MAX_RESPONSE_BYTES,
+                "page {} is {} bytes, exceeds max {}",
+                idx + 1,
+                page.len(),
+                MAX_RESPONSE_BYTES
+            );
+        }
     }
 }

@@ -72,6 +72,7 @@ pub mod types;
 pub use browser::NomadBrowser;
 pub use directory::NomadDirectory;
 pub use micron::MicronBuilder;
-pub use node::{NomadNode, PageCache};
+pub use node::{paginate_path, split_into_chunks, NomadNode, PageCache};
+pub use node::{CHUNK_TARGET_BYTES, MAX_PAGES_PER_FILE, MAX_RESPONSE_BYTES};
 pub use types::DirectoryEntry;
 pub use types::{BrowseEvent, NodeConfig, NomadError};
