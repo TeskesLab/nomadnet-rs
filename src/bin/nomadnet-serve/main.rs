@@ -221,32 +221,47 @@ fn build_interfaces(rns_config_path: &Option<PathBuf>) -> Vec<RnsInterfaceConfig
 }
 
 fn scan_pages(pages_dir: &Path) -> Vec<String> {
+    fn recurse_collect(base: &Path, current: &Path, out: &mut Vec<String>) {
+        let entries = match std::fs::read_dir(current) {
+            Ok(e) => e,
+            Err(err) => {
+                warn!("Failed to read pages directory {}: {}", current.display(), err);
+                return;
+            }
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                recurse_collect(base, &path, out);
+                continue;
+            }
+
+            if !path.is_file() {
+                continue;
+            }
+
+            let is_mu = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("mu"))
+                .unwrap_or(false);
+            if !is_mu {
+                continue;
+            }
+
+            if let Ok(rel) = path.strip_prefix(base) {
+                out.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+
     let mut pages = Vec::new();
     if !pages_dir.is_dir() {
         return pages;
     }
-    let entries = match std::fs::read_dir(pages_dir) {
-        Ok(e) => e,
-        Err(err) => {
-            warn!(
-                "Failed to read pages directory {}: {}",
-                pages_dir.display(),
-                err
-            );
-            return pages;
-        }
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(name) = path.file_name() {
-                let name_str = name.to_string_lossy();
-                if name_str.ends_with(".mu") {
-                    pages.push(name_str.to_string());
-                }
-            }
-        }
-    }
+
+    recurse_collect(pages_dir, pages_dir, &mut pages);
     pages.sort();
     pages
 }
@@ -272,6 +287,10 @@ fn build_auto_index(pages: &[String], nomad_address: &str) -> Vec<u8> {
     page.build().into_bytes()
 }
 
+fn replace_self(content: &str, nomad_address: &str) -> String {
+    content.replace("$SELF", nomad_address)
+}
+
 fn populate_cache(cache: &PageCache, pages_dir: &Path, nomad_address: &str) {
     let pages = scan_pages(pages_dir);
     let has_index = pages.iter().any(|p| p == "index.mu");
@@ -280,7 +299,8 @@ fn populate_cache(cache: &PageCache, pages_dir: &Path, nomad_address: &str) {
         let file_path = pages_dir.join(name);
         if let Ok(content) = std::fs::read(&file_path) {
             let page_path = format!("/page/{name}");
-            cache.set(&page_path, content);
+            let replaced = replace_self(&String::from_utf8_lossy(&content), nomad_address);
+            cache.set(&page_path, replaced.into_bytes());
         }
     }
 
@@ -294,13 +314,14 @@ fn populate_cache(cache: &PageCache, pages_dir: &Path, nomad_address: &str) {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let log_level = if args.verbose { "debug" } else { "info" };
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level)),
-        )
-        .init();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        if args.verbose {
+            tracing_subscriber::EnvFilter::new("debug")
+        } else {
+            tracing_subscriber::EnvFilter::new("info,rns_net=warn,rns_core=warn")
+        }
+    });
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     info!("Starting nomadnet-serve...");
 
@@ -373,7 +394,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         use notify::{recommended_watcher, RecursiveMode, Watcher};
         let (tx, rx) = std::sync::mpsc::channel();
         let mut watcher = recommended_watcher(tx)?;
-        watcher.watch(&pages_dir, RecursiveMode::NonRecursive)?;
+        watcher.watch(&pages_dir, RecursiveMode::Recursive)?;
         info!("Watching {} for changes", pages_dir.display());
         Some(rx)
     } else {

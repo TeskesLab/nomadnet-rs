@@ -12,9 +12,9 @@ readme = "README.md"
 rust-version = "1.75"
 
 [dependencies]
-rns-core = "0.1.8"
-rns-crypto = "0.1.5"
-rns-net = "0.5.5"
+rns-core = { path = "../rns-rs/rns-core" }
+rns-crypto = { path = "../rns-rs/rns-crypto" }
+rns-net = { path = "../rns-rs/rns-net" }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 thiserror = "1"
