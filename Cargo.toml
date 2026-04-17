@@ -1,0 +1,21 @@
+[package]
+name = "nomadnet-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Standalone Rust library for NomadNet Node Hosting over Reticulum"
+license = "MIT"
+repository = "https://github.com/TeskesLab/LXIRC"
+authors = ["Teske's Lab", "Lucas Teske <lucas@teske.com.br>", "Mister Maluco <teskeslab@lucasteske.dev>"]
+keywords = ["nomadnet", "reticulum", "rns", "mesh-network"]
+categories = ["network-programming"]
+readme = "../README.md"
+
+[dependencies]
+rns-core = { version = "0.1.7", path = "../../rns-rs/rns-core" }
+rns-crypto = { version = "0.1.4", path = "../../rns-rs/rns-crypto" }
+rns-net = { version = "0.5.4", path = "../../rns-rs/rns-net" }
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+thiserror = "1"
+tracing = "0.1"
+hex = "0.4"
