@@ -433,3 +433,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Shutting down...");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{replace_self, scan_pages};
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn make_temp_dir(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "nomadnet-serve-{name}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("failed to create temp dir");
+        path
+    }
+
+    #[test]
+    fn replace_self_rewrites_all_placeholders() {
+        let in_text = "`[Home`$SELF:/page/index.mu]\n`[Users`$SELF:/page/users.mu]";
+        let out = replace_self(in_text, "deadbeefcafebabe");
+        assert!(!out.contains("$SELF"));
+        assert!(out.contains("deadbeefcafebabe:/page/index.mu"));
+        assert!(out.contains("deadbeefcafebabe:/page/users.mu"));
+    }
+
+    #[test]
+    fn scan_pages_recurses_and_returns_relative_paths() {
+        let root = make_temp_dir("scan-recursive");
+        let nested = root.join("docs/sub");
+        fs::create_dir_all(&nested).expect("failed to create nested dir");
+
+        fs::write(root.join("index.mu"), b"index").expect("failed to write index.mu");
+        fs::write(root.join("README.txt"), b"ignore").expect("failed to write README.txt");
+        fs::write(root.join("docs/guide.mu"), b"guide").expect("failed to write guide.mu");
+        fs::write(nested.join("deep.mu"), b"deep").expect("failed to write deep.mu");
+
+        let pages = scan_pages(&root);
+        assert!(pages.contains(&"index.mu".to_string()));
+        assert!(pages.contains(&"docs/guide.mu".to_string()));
+        assert!(pages.contains(&"docs/sub/deep.mu".to_string()));
+        assert!(!pages.contains(&"README.txt".to_string()));
+
+        let _ = fs::remove_dir_all(root);
+    }
+}
