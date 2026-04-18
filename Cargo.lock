@@ -698,6 +698,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 [[package]]
 name = "rns-core"
 version = "0.1.8"
+source = "git+https://github.com/racerxdl/rns-rs#3816edf1d6e7e8a91d9f1b051ee1f85bd95ba131"
 dependencies = [
  "log",
  "rns-crypto",
@@ -706,6 +707,7 @@ dependencies = [
 [[package]]
 name = "rns-crypto"
 version = "0.1.5"
+source = "git+https://github.com/racerxdl/rns-rs#3816edf1d6e7e8a91d9f1b051ee1f85bd95ba131"
 dependencies = [
  "aes",
  "cbc",
@@ -718,6 +720,7 @@ dependencies = [
 [[package]]
 name = "rns-net"
 version = "0.5.5"
+source = "git+https://github.com/racerxdl/rns-rs#3816edf1d6e7e8a91d9f1b051ee1f85bd95ba131"
 dependencies = [
  "bzip2",
  "libc",

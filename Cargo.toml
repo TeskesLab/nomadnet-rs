@@ -12,9 +12,9 @@ readme = "README.md"
 rust-version = "1.75"
 
 [dependencies]
-rns-core = { path = "../rns-rs/rns-core" }
-rns-crypto = { path = "../rns-rs/rns-crypto" }
-rns-net = { path = "../rns-rs/rns-net" }
+rns-core = { git = "https://github.com/racerxdl/rns-rs" }
+rns-crypto = { git = "https://github.com/racerxdl/rns-rs" }
+rns-net = { git = "https://github.com/racerxdl/rns-rs" }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 thiserror = "1"
