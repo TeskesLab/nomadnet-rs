@@ -40,15 +40,27 @@ impl PageCache {
     }
 
     pub fn get(&self, path: &str) -> Option<Vec<u8>> {
-        self.inner.read().unwrap_or_else(|e| e.into_inner()).get(path).cloned()
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(path)
+            .cloned()
     }
 
     pub fn remove(&self, path: &str) {
-        self.inner.write().unwrap_or_else(|e| e.into_inner()).remove(path);
+        self.inner
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(path);
     }
 
     pub fn paths(&self) -> Vec<String> {
-        self.inner.read().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect()
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect()
     }
 }
 
@@ -177,11 +189,7 @@ impl NomadNode {
     /// Handlers read from the `PageCache` synchronously.  The application is
     /// responsible for populating the cache from its async context (e.g., a
     /// periodic timer in the main loop).
-    pub fn new(
-        node: Arc<RnsNode>,
-        config: NodeConfig,
-        paths: &[&str],
-    ) -> Result<Self, NomadError> {
+    pub fn new(node: Arc<RnsNode>, config: NodeConfig, paths: &[&str]) -> Result<Self, NomadError> {
         let identity = Identity::from_private_key(&config.identity_prv);
         let identity_hash_bytes = *identity.hash();
         let identity_hash = IdentityHash(identity_hash_bytes);

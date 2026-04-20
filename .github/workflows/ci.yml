@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Clippy (default features)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Clippy (serve feature)
+        run: cargo clippy --all-targets --features serve -- -D warnings
+
+      - name: Tests (default features)
+        run: cargo test --all-targets --no-fail-fast
+
+      - name: Tests (serve feature)
+        run: cargo test --all-targets --features serve --no-fail-fast
+
+      - name: Build release (serve feature)
+        run: cargo build --release --features serve

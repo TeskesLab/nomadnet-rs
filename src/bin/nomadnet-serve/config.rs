@@ -70,9 +70,7 @@ impl RnsConfig {
                     interface_props.insert(key.to_string(), value.to_string());
                     continue;
                 }
-                if current_section.as_deref() == Some("reticulum")
-                    && key == "enable_transport"
-                {
+                if current_section.as_deref() == Some("reticulum") && key == "enable_transport" {
                     config.enable_transport = parse_bool(value);
                 }
             }
@@ -180,7 +178,10 @@ mod tests {
         assert_eq!(iface.name, "RNS Testnet Amsterdam");
         assert!(iface.enabled);
         match &iface.iface_type {
-            InterfaceType::TcpClient { target_host, target_port } => {
+            InterfaceType::TcpClient {
+                target_host,
+                target_port,
+            } => {
                 assert_eq!(target_host, "amsterdam.reticulum.network");
                 assert_eq!(*target_port, 4985);
             }

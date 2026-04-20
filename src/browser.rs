@@ -186,9 +186,9 @@ impl NomadBrowser {
 
             self.emit_event(
                 BrowseEvent::LinkClosed {
-                dest_hash,
-                link_id: link_id.0,
-                reason,
+                    dest_hash,
+                    link_id: link_id.0,
+                    reason,
                 },
                 "LinkClosed",
             );
@@ -246,7 +246,6 @@ impl NomadBrowser {
 
         Ok(())
     }
-
 }
 
 impl Default for NomadBrowser {
@@ -272,17 +271,21 @@ mod tests {
             .lock()
             .unwrap()
             .insert(link_id, dest_hash);
-        browser.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(
-            link_id,
-            VecDeque::from([
-                PendingRequest {
-                    path: "/page/first.mu".to_string(),
-                },
-                PendingRequest {
-                    path: "/page/second.mu".to_string(),
-                },
-            ]),
-        );
+        browser
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                link_id,
+                VecDeque::from([
+                    PendingRequest {
+                        path: "/page/first.mu".to_string(),
+                    },
+                    PendingRequest {
+                        path: "/page/second.mu".to_string(),
+                    },
+                ]),
+            );
 
         browser.handle_response(LinkId(link_id), [0u8; 16], b"ok".to_vec());
 
@@ -316,17 +319,31 @@ mod tests {
             .lock()
             .unwrap()
             .insert(dest_hash, link_id);
-        browser.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(
-            link_id,
-            VecDeque::from([PendingRequest {
-                path: "/page/index.mu".to_string(),
-            }]),
-        );
+        browser
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                link_id,
+                VecDeque::from([PendingRequest {
+                    path: "/page/index.mu".to_string(),
+                }]),
+            );
 
         browser.handle_link_closed(LinkId(link_id), Some("test".to_string()));
 
-        assert!(browser.pending.lock().unwrap_or_else(|e| e.into_inner()).get(&link_id).is_none());
-        assert!(browser.link_to_dest.lock().unwrap_or_else(|e| e.into_inner()).get(&link_id).is_none());
+        assert!(browser
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&link_id)
+            .is_none());
+        assert!(browser
+            .link_to_dest
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&link_id)
+            .is_none());
         assert!(browser
             .dest_to_link
             .lock()
@@ -390,7 +407,10 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .contains_key(&dest_hash));
-        let link_to_dest = browser.link_to_dest.lock().unwrap_or_else(|e| e.into_inner());
+        let link_to_dest = browser
+            .link_to_dest
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         assert_eq!(link_to_dest.get(&link_id.0), Some(&dest_hash));
     }
 

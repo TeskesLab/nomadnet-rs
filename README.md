@@ -1,5 +1,8 @@
 # nomadnet-rs
 
+[![CI](https://github.com/TeskesLab/nomadnet-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/TeskesLab/nomadnet-rs/actions/workflows/ci.yml)
+[![crate](https://img.shields.io/crates/v/nomadnet-rs.svg?label=nomadnet-rs)](https://crates.io/crates/nomadnet-rs)
+
 Rust library for [NomadNet](https://markqvist.github.io/Reticulum/network/nomadnet.html) node hosting and browsing over the [Reticulum Network Stack](https://reticulum.network/).
 
 Zero-application-logic dependencies — works with any RNS-based project.
@@ -21,8 +24,8 @@ nomadnet-rs = { version = "0.1", features = ["serve"] }
 ```
 
 ```bash
-# Install from source
-cargo install nomadnet-rs --features serve
+# Install from crates.io
+cargo install nomadnet-rs --features serve --bin nomadnet-serve
 
 # Run
 nomadnet-serve -p ./my-pages --rns-config ~/.config/reticulum/config --watch
@@ -58,7 +61,7 @@ use nomadnet_rs::{NomadNode, NodeConfig, PageCache, MicronBuilder};
 use rns_net::RnsNode;
 
 let paths = ["/page/index.mu", "/page/about.mu"];
-let nomad = NomadNode::new(&node, config, &paths)?;
+let nomad = NomadNode::new(node.clone(), config, &paths)?;
 let cache = nomad.page_cache();
 
 let mut page = MicronBuilder::new();

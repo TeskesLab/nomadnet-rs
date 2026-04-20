@@ -254,7 +254,11 @@ fn scan_pages(pages_dir: &Path) -> Vec<String> {
         let entries = match std::fs::read_dir(current) {
             Ok(e) => e,
             Err(err) => {
-                warn!("Failed to read pages directory {}: {}", current.display(), err);
+                warn!(
+                    "Failed to read pages directory {}: {}",
+                    current.display(),
+                    err
+                );
                 return;
             }
         };
@@ -452,10 +456,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         | notify::EventKind::Remove(_) = event.kind
                         {
                             populate_cache(&page_cache, &pages_dir, &nomad_address);
-                            info!(
-                                "Page cache refreshed ({} pages)",
-                                page_cache.paths().len()
-                            );
+                            info!("Page cache refreshed ({} pages)", page_cache.paths().len());
                         }
                     }
                     Ok(Err(e)) => {
