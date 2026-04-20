@@ -1,5 +1,6 @@
 mod config;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -109,7 +110,21 @@ fn load_or_create_identity(path: &Path) -> IdentityResult {
         let mut prv_arr = [0u8; 64];
         prv_arr.copy_from_slice(&prv_bytes);
         let hex_str = hex::encode(prv_arr);
-        std::fs::write(path, hex_str)?;
+        #[cfg(target_family = "unix")]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(0o600)
+                .open(path)?;
+            file.write_all(hex_str.as_bytes())?;
+        }
+        #[cfg(not(target_family = "unix"))]
+        {
+            std::fs::write(path, hex_str)?;
+        }
         info!("Created new identity at {}", path.display());
         Ok((identity, prv_arr, pub_arr))
     }
@@ -226,7 +241,16 @@ fn scan_pages(pages_dir: &Path) -> Vec<String> {
         Err(_) => return Vec::new(),
     };
 
-    fn recurse_collect(base: &Path, current: &Path, out: &mut Vec<String>) {
+    fn recurse_collect(
+        base: &Path,
+        current: &Path,
+        out: &mut Vec<String>,
+        visited: &mut HashSet<PathBuf>,
+    ) {
+        if !visited.insert(current.to_path_buf()) {
+            return;
+        }
+
         let entries = match std::fs::read_dir(current) {
             Ok(e) => e,
             Err(err) => {
@@ -236,24 +260,7 @@ fn scan_pages(pages_dir: &Path) -> Vec<String> {
         };
 
         for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let canonical = match path.canonicalize() {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-                if !canonical.starts_with(base) {
-                    continue;
-                }
-                recurse_collect(base, &path, out);
-                continue;
-            }
-
-            if !path.is_file() {
-                continue;
-            }
-
-            let canonical = match path.canonicalize() {
+            let canonical = match entry.path().canonicalize() {
                 Ok(c) => c,
                 Err(_) => continue,
             };
@@ -261,7 +268,16 @@ fn scan_pages(pages_dir: &Path) -> Vec<String> {
                 continue;
             }
 
-            let is_mu = path
+            if canonical.is_dir() {
+                recurse_collect(base, &canonical, out, visited);
+                continue;
+            }
+
+            if !canonical.is_file() {
+                continue;
+            }
+
+            let is_mu = canonical
                 .extension()
                 .and_then(|e| e.to_str())
                 .map(|e| e.eq_ignore_ascii_case("mu"))
@@ -270,14 +286,15 @@ fn scan_pages(pages_dir: &Path) -> Vec<String> {
                 continue;
             }
 
-            if let Ok(rel) = path.strip_prefix(base) {
+            if let Ok(rel) = canonical.strip_prefix(base) {
                 out.push(rel.to_string_lossy().replace('\\', "/"));
             }
         }
     }
 
     let mut pages = Vec::new();
-    recurse_collect(&canonical_base, pages_dir, &mut pages);
+    let mut visited = HashSet::new();
+    recurse_collect(&canonical_base, &canonical_base, &mut pages, &mut visited);
     pages.sort();
     pages
 }
@@ -310,6 +327,17 @@ fn replace_self(content: &str, nomad_address: &str) -> String {
 fn populate_cache(cache: &PageCache, pages_dir: &Path, nomad_address: &str) {
     let pages = scan_pages(pages_dir);
     let has_index = pages.iter().any(|p| p == "index.mu");
+    let mut desired_paths: HashSet<String> = pages.iter().map(|p| format!("/page/{p}")).collect();
+
+    if !has_index {
+        desired_paths.insert("/page/index.mu".to_string());
+    }
+
+    for existing in cache.paths() {
+        if existing.starts_with("/page/") && !desired_paths.contains(&existing) {
+            cache.remove(&existing);
+        }
+    }
 
     for name in &pages {
         let file_path = pages_dir.join(name);
@@ -451,7 +479,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{replace_self, scan_pages};
+    use super::{load_or_create_identity, populate_cache, replace_self, scan_pages};
+    use nomadnet_rs::PageCache;
     use std::fs;
     use std::path::PathBuf;
 
@@ -493,6 +522,60 @@ mod tests {
         assert!(pages.contains(&"docs/guide.mu".to_string()));
         assert!(pages.contains(&"docs/sub/deep.mu".to_string()));
         assert!(!pages.contains(&"README.txt".to_string()));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scan_pages_handles_noncanonical_input_path() {
+        let root = make_temp_dir("scan-noncanonical");
+        let sub = root.join("sub");
+        fs::create_dir_all(&sub).expect("failed to create sub dir");
+        fs::write(root.join("index.mu"), b"index").expect("failed to write index.mu");
+
+        let funky = root.join("sub").join("..");
+        let pages = scan_pages(&funky);
+        assert!(pages.contains(&"index.mu".to_string()));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn populate_cache_removes_deleted_pages() {
+        let root = make_temp_dir("cache-delete");
+        fs::write(root.join("one.mu"), b"one").expect("failed to write one.mu");
+        fs::write(root.join("two.mu"), b"two").expect("failed to write two.mu");
+
+        let cache = PageCache::new();
+        populate_cache(&cache, &root, "deadbeef");
+        assert!(cache.get("/page/one.mu").is_some());
+        assert!(cache.get("/page/two.mu").is_some());
+
+        fs::remove_file(root.join("two.mu")).expect("failed to remove two.mu");
+        populate_cache(&cache, &root, "deadbeef");
+        assert!(cache.get("/page/one.mu").is_some());
+        assert!(cache.get("/page/two.mu").is_none());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn created_identity_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = make_temp_dir("identity-perms");
+        let identity_path = root.join("identity");
+
+        let _ = load_or_create_identity(&identity_path).expect("failed to create identity");
+        let mode = fs::metadata(&identity_path)
+            .expect("failed to stat identity")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(mode & 0o077, 0, "group/other bits must be zero");
+        assert_ne!(mode & 0o400, 0, "owner read bit must be set");
 
         let _ = fs::remove_dir_all(root);
     }

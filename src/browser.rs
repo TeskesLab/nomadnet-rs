@@ -2,6 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use rns_net::{LinkId, RnsNode};
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tracing::{debug, warn};
 
@@ -45,6 +46,18 @@ impl NomadBrowser {
         let _ = self.handle_link_established_with_node(None, link_id, dest_hash);
     }
 
+    fn emit_event(&self, event: BrowseEvent, name: &str) {
+        match self.event_tx.try_send(event) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                warn!("NomadBrowser: dropping {name} event because event queue is full")
+            }
+            Err(TrySendError::Closed(_)) => {
+                warn!("NomadBrowser: dropping {name} event because event queue is closed")
+            }
+        }
+    }
+
     pub fn handle_link_established_with_node(
         &self,
         node: Option<&Arc<RnsNode>>,
@@ -70,7 +83,7 @@ impl NomadBrowser {
             dest_hash,
             link_id: link_id.0,
         };
-        let _ = self.event_tx.try_send(event);
+        self.emit_event(event, "LinkEstablished");
 
         let queued_paths = {
             let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -146,7 +159,7 @@ impl NomadBrowser {
             path,
             content: data,
         };
-        let _ = self.event_tx.try_send(event);
+        self.emit_event(event, "PageReceived");
     }
 
     pub fn handle_link_closed(&self, link_id: LinkId, reason: Option<String>) {
@@ -171,11 +184,14 @@ impl NomadBrowser {
                 dest_to_link.remove(&dest_hash);
             }
 
-            let _ = self.event_tx.try_send(BrowseEvent::LinkClosed {
+            self.emit_event(
+                BrowseEvent::LinkClosed {
                 dest_hash,
                 link_id: link_id.0,
                 reason,
-            });
+                },
+                "LinkClosed",
+            );
         }
     }
 
@@ -207,10 +223,13 @@ impl NomadBrowser {
         let link_id = match node.create_link(dest_hash, sig_pub_bytes) {
             Ok(link_id) => link_id,
             Err(err) => {
-                let _ = self.event_tx.try_send(BrowseEvent::LinkFailed {
-                    dest_hash,
-                    error: format!("{err:?}"),
-                });
+                self.emit_event(
+                    BrowseEvent::LinkFailed {
+                        dest_hash,
+                        error: format!("{err:?}"),
+                    },
+                    "LinkFailed",
+                );
                 return Err(NomadError::from(err));
             }
         };
@@ -228,10 +247,6 @@ impl NomadBrowser {
         Ok(())
     }
 
-    pub(crate) fn has_active_link(&self, dest_hash: &[u8; 16]) -> bool {
-        let dest_to_link = self.dest_to_link.lock().unwrap_or_else(|e| e.into_inner());
-        dest_to_link.contains_key(dest_hash)
-    }
 }
 
 impl Default for NomadBrowser {
@@ -343,7 +358,11 @@ mod tests {
         let dest_hash = [0xaa; 16];
         let link_id = [0xbb; 16];
 
-        assert!(!browser.has_active_link(&dest_hash));
+        assert!(!browser
+            .dest_to_link
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&dest_hash));
 
         browser
             .dest_to_link
@@ -351,7 +370,11 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner())
             .insert(dest_hash, link_id);
 
-        assert!(browser.has_active_link(&dest_hash));
+        assert!(browser
+            .dest_to_link
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&dest_hash));
     }
 
     #[test]
@@ -362,7 +385,11 @@ mod tests {
 
         browser.handle_link_established(link_id, dest_hash);
 
-        assert!(browser.has_active_link(&dest_hash));
+        assert!(browser
+            .dest_to_link
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&dest_hash));
         let link_to_dest = browser.link_to_dest.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(link_to_dest.get(&link_id.0), Some(&dest_hash));
     }
@@ -376,5 +403,24 @@ mod tests {
 
         let pending = browser.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn event_queue_is_bounded_and_overflow_drops_new_events() {
+        let browser = NomadBrowser::new();
+        let mut events = browser.events();
+
+        for i in 0..65u8 {
+            let link_id = LinkId([i; 16]);
+            let dest_hash = [i; 16];
+            browser.handle_link_established(link_id, dest_hash);
+        }
+
+        let mut count = 0usize;
+        while events.try_recv().is_ok() {
+            count += 1;
+        }
+
+        assert_eq!(count, 64);
     }
 }
