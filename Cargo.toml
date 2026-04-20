@@ -10,6 +10,12 @@ keywords = ["nomadnet", "reticulum", "rns", "mesh-network", "nomad"]
 categories = ["network-programming", "asynchronous"]
 readme = "README.md"
 rust-version = "1.75"
+include = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "src/**/*.rs",
+]
 
 [dependencies]
 rns-core = "0.1.9"
