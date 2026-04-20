@@ -70,10 +70,10 @@ impl RnsConfig {
                     interface_props.insert(key.to_string(), value.to_string());
                     continue;
                 }
-                if current_section.as_deref() == Some("reticulum") {
-                    if key == "enable_transport" {
-                        config.enable_transport = parse_bool(value);
-                    }
+                if current_section.as_deref() == Some("reticulum")
+                    && key == "enable_transport"
+                {
+                    config.enable_transport = parse_bool(value);
                 }
             }
         }
@@ -158,4 +158,120 @@ pub enum ConfigError {
     MissingField(String, &'static str),
     #[error("Unknown interface type {1} in interface {0}")]
     UnknownInterfaceType(String, String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_tcp_client_interface() {
+        let config = r#"
+[reticulum]
+
+[[RNS Testnet Amsterdam]]
+  type = TCPClientInterface
+  target_host = amsterdam.reticulum.network
+  target_port = 4985
+"#;
+        let parsed = RnsConfig::parse(config).unwrap();
+        assert_eq!(parsed.interfaces.len(), 1);
+        let iface = &parsed.interfaces[0];
+        assert_eq!(iface.name, "RNS Testnet Amsterdam");
+        assert!(iface.enabled);
+        match &iface.iface_type {
+            InterfaceType::TcpClient { target_host, target_port } => {
+                assert_eq!(target_host, "amsterdam.reticulum.network");
+                assert_eq!(*target_port, 4985);
+            }
+            _ => panic!("expected TcpClient"),
+        }
+    }
+
+    #[test]
+    fn parse_tcp_server_with_custom_port() {
+        let config = r#"
+[[My Server]]
+  type = TCPServerInterface
+  listen_port = 4321
+"#;
+        let parsed = RnsConfig::parse(config).unwrap();
+        assert_eq!(parsed.interfaces.len(), 1);
+        match &parsed.interfaces[0].iface_type {
+            InterfaceType::TcpServer { listen_port } => assert_eq!(*listen_port, 4321),
+            _ => panic!("expected TcpServer"),
+        }
+    }
+
+    #[test]
+    fn parse_udp_interface() {
+        let config = r#"
+[[Local UDP]]
+  type = UDPInterface
+  listen_addr = 0.0.0.0:4242
+"#;
+        let parsed = RnsConfig::parse(config).unwrap();
+        assert_eq!(parsed.interfaces.len(), 1);
+        match &parsed.interfaces[0].iface_type {
+            InterfaceType::Udp { bind_addr } => assert_eq!(bind_addr, "0.0.0.0:4242"),
+            _ => panic!("expected UDP"),
+        }
+    }
+
+    #[test]
+    fn disabled_interface_skipped() {
+        let config = r#"
+[[Disabled Iface]]
+  type = TCPClientInterface
+  target_host = example.com
+  target_port = 1234
+  interface_enabled = no
+"#;
+        let parsed = RnsConfig::parse(config).unwrap();
+        assert_eq!(parsed.interfaces.len(), 1);
+        assert!(!parsed.interfaces[0].enabled);
+    }
+
+    #[test]
+    fn enable_transport_parsed() {
+        let config = r#"
+[reticulum]
+  enable_transport = true
+"#;
+        let parsed = RnsConfig::parse(config).unwrap();
+        assert!(parsed.enable_transport);
+    }
+
+    #[test]
+    fn comments_and_empty_lines_ignored() {
+        let config = r#"
+# This is a comment
+  # Indented comment
+
+[[Test]]
+  type = UDPInterface
+"#;
+        let parsed = RnsConfig::parse(config).unwrap();
+        assert_eq!(parsed.interfaces.len(), 1);
+    }
+
+    #[test]
+    fn unknown_type_is_skipped() {
+        let config = r#"
+[[Bad]]
+  type = FakeInterface
+"#;
+        let parsed = RnsConfig::parse(config).unwrap();
+        assert_eq!(parsed.interfaces.len(), 0);
+    }
+
+    #[test]
+    fn missing_type_is_skipped() {
+        let config = r#"
+[[NoType]]
+  target_host = example.com
+"#;
+        let parsed = RnsConfig::parse(config).unwrap();
+        assert_eq!(parsed.interfaces.len(), 0);
+    }
 }

@@ -63,9 +63,9 @@ fn expand_path(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn load_or_create_identity(
-    path: &Path,
-) -> Result<(Identity, [u8; 64], [u8; 32]), Box<dyn std::error::Error>> {
+type IdentityResult = Result<(Identity, [u8; 64], [u8; 32]), Box<dyn std::error::Error>>;
+
+fn load_or_create_identity(path: &Path) -> IdentityResult {
     if path.exists() {
         let bytes = std::fs::read(path)?;
         let prv = if bytes.len() == 64 {
@@ -221,6 +221,11 @@ fn build_interfaces(rns_config_path: &Option<PathBuf>) -> Vec<RnsInterfaceConfig
 }
 
 fn scan_pages(pages_dir: &Path) -> Vec<String> {
+    let canonical_base = match pages_dir.canonicalize() {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
     fn recurse_collect(base: &Path, current: &Path, out: &mut Vec<String>) {
         let entries = match std::fs::read_dir(current) {
             Ok(e) => e,
@@ -233,11 +238,26 @@ fn scan_pages(pages_dir: &Path) -> Vec<String> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
+                let canonical = match path.canonicalize() {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                if !canonical.starts_with(base) {
+                    continue;
+                }
                 recurse_collect(base, &path, out);
                 continue;
             }
 
             if !path.is_file() {
+                continue;
+            }
+
+            let canonical = match path.canonicalize() {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            if !canonical.starts_with(base) {
                 continue;
             }
 
@@ -257,11 +277,7 @@ fn scan_pages(pages_dir: &Path) -> Vec<String> {
     }
 
     let mut pages = Vec::new();
-    if !pages_dir.is_dir() {
-        return pages;
-    }
-
-    recurse_collect(pages_dir, pages_dir, &mut pages);
+    recurse_collect(&canonical_base, pages_dir, &mut pages);
     pages.sort();
     pages
 }
@@ -376,7 +392,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             node_name: args.node_name.clone(),
             announce_interval_secs: args.announce_interval,
         };
-        let nn = NomadNode::new(&node, config, &page_path_refs)?;
+        let nn = NomadNode::new(node.clone(), config, &page_path_refs)?;
         nn.start_announcing(node.clone(), cancel.clone())?;
         nn
     };
@@ -397,11 +413,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         watcher.watch(&pages_dir, RecursiveMode::Recursive)?;
         info!("Watching {} for changes", pages_dir.display());
 
+        let watch_cancel = cancel.clone();
         std::thread::spawn(move || {
             let _watcher = watcher;
-            for result in rx.iter() {
-                match result {
-                    Ok(event) => {
+            loop {
+                match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                    Ok(Ok(event)) => {
                         if let notify::EventKind::Modify(_)
                         | notify::EventKind::Create(_)
                         | notify::EventKind::Remove(_) = event.kind
@@ -413,8 +430,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             );
                         }
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         warn!("File watch error: {}", e);
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if watch_cancel.is_cancelled() {
+                            break;
+                        }
                     }
                 }
             }

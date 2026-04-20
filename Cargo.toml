@@ -15,7 +15,7 @@ rust-version = "1.75"
 rns-core = "0.1.9"
 rns-crypto = "0.1.5"
 rns-net = "0.5.6"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
 tokio-util = "0.7"
 thiserror = "1"
 tracing = "0.1"
@@ -26,7 +26,7 @@ notify = { version = "8", optional = true }
 
 [features]
 default = []
-serve = ["dep:clap", "dep:tracing-subscriber", "dep:notify"]
+serve = ["dep:clap", "dep:tracing-subscriber", "dep:notify", "tokio/rt-multi-thread", "tokio/macros"]
 
 [[bin]]
 name = "nomadnet-serve"

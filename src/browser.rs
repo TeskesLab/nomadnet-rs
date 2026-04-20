@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use rns_net::{LinkId, RnsNode};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::types::{BrowseEvent, NomadError};
 
@@ -37,7 +37,7 @@ impl NomadBrowser {
     }
 
     pub fn events(&self) -> Receiver<BrowseEvent> {
-        let mut guard = self.event_rx.lock().unwrap();
+        let mut guard = self.event_rx.lock().unwrap_or_else(|e| e.into_inner());
         guard.take().expect("events() called more than once")
     }
 
@@ -58,11 +58,11 @@ impl NomadBrowser {
         );
 
         {
-            let mut link_to_dest = self.link_to_dest.lock().unwrap();
+            let mut link_to_dest = self.link_to_dest.lock().unwrap_or_else(|e| e.into_inner());
             link_to_dest.insert(link_id.0, dest_hash);
         }
         {
-            let mut dest_to_link = self.dest_to_link.lock().unwrap();
+            let mut dest_to_link = self.dest_to_link.lock().unwrap_or_else(|e| e.into_inner());
             dest_to_link.insert(dest_hash, link_id.0);
         }
 
@@ -73,7 +73,7 @@ impl NomadBrowser {
         let _ = self.event_tx.try_send(event);
 
         let queued_paths = {
-            let pending = self.pending.lock().unwrap();
+            let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             pending
                 .get(&link_id.0)
                 .map(|q| q.iter().map(|req| req.path.clone()).collect::<Vec<_>>())
@@ -85,8 +85,8 @@ impl NomadBrowser {
         }
 
         let Some(node) = node else {
-            debug!(
-                "NomadBrowser: {} queued request(s) waiting for link {} but no node provided",
+            warn!(
+                "NomadBrowser: {} queued request(s) for link {} dropped — no node provided",
                 queued_paths.len(),
                 link_id
             );
@@ -103,7 +103,7 @@ impl NomadBrowser {
 
     pub fn handle_response(&self, link_id: LinkId, _request_id: [u8; 16], data: Vec<u8>) {
         let dest_hash = {
-            let link_to_dest = self.link_to_dest.lock().unwrap();
+            let link_to_dest = self.link_to_dest.lock().unwrap_or_else(|e| e.into_inner());
             link_to_dest.get(&link_id.0).copied()
         };
 
@@ -119,30 +119,19 @@ impl NomadBrowser {
         };
 
         let path = {
-            let mut pending = self.pending.lock().unwrap();
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             let queue = match pending.get_mut(&link_id.0) {
-                Some(queue) => queue,
+                Some(q) => q,
                 None => return,
             };
             let req = match queue.pop_front() {
-                Some(req) => req,
+                Some(r) => r,
                 None => return,
             };
             if queue.is_empty() {
                 pending.remove(&link_id.0);
             }
-            Some(req.path)
-        };
-
-        let path = match path {
-            Some(p) => p,
-            None => {
-                debug!(
-                    "NomadBrowser: received response for link_id={} but no pending request",
-                    link_id
-                );
-                return;
-            }
+            req.path
         };
 
         debug!(
@@ -162,23 +151,23 @@ impl NomadBrowser {
 
     pub fn handle_link_closed(&self, link_id: LinkId, reason: Option<String>) {
         let dest_hash = {
-            let link_to_dest = self.link_to_dest.lock().unwrap();
+            let link_to_dest = self.link_to_dest.lock().unwrap_or_else(|e| e.into_inner());
             link_to_dest.get(&link_id.0).copied()
         };
 
         {
-            let mut link_to_dest = self.link_to_dest.lock().unwrap();
+            let mut link_to_dest = self.link_to_dest.lock().unwrap_or_else(|e| e.into_inner());
             link_to_dest.remove(&link_id.0);
         }
 
         {
-            let mut pending = self.pending.lock().unwrap();
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             pending.remove(&link_id.0);
         }
 
         if let Some(dest_hash) = dest_hash {
             {
-                let mut dest_to_link = self.dest_to_link.lock().unwrap();
+                let mut dest_to_link = self.dest_to_link.lock().unwrap_or_else(|e| e.into_inner());
                 dest_to_link.remove(&dest_hash);
             }
 
@@ -198,10 +187,10 @@ impl NomadBrowser {
         path: &str,
     ) -> Result<(), NomadError> {
         {
-            let dest_to_link = self.dest_to_link.lock().unwrap();
+            let dest_to_link = self.dest_to_link.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(link_id) = dest_to_link.get(&dest_hash) {
                 {
-                    let mut pending = self.pending.lock().unwrap();
+                    let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
                     pending
                         .entry(*link_id)
                         .or_default()
@@ -227,7 +216,7 @@ impl NomadBrowser {
         };
 
         {
-            let mut pending = self.pending.lock().unwrap();
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             pending
                 .entry(link_id)
                 .or_default()
@@ -239,9 +228,8 @@ impl NomadBrowser {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn has_active_link(&self, dest_hash: &[u8; 16]) -> bool {
-        let dest_to_link = self.dest_to_link.lock().unwrap();
+    pub(crate) fn has_active_link(&self, dest_hash: &[u8; 16]) -> bool {
+        let dest_to_link = self.dest_to_link.lock().unwrap_or_else(|e| e.into_inner());
         dest_to_link.contains_key(dest_hash)
     }
 }
@@ -269,7 +257,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert(link_id, dest_hash);
-        browser.pending.lock().unwrap().insert(
+        browser.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(
             link_id,
             VecDeque::from([
                 PendingRequest {
@@ -289,7 +277,7 @@ mod tests {
             _ => panic!("expected page-received event"),
         }
 
-        let pending = browser.pending.lock().unwrap();
+        let pending = browser.pending.lock().unwrap_or_else(|e| e.into_inner());
         let queue = pending.get(&link_id).expect("queue should still exist");
         assert_eq!(queue.len(), 1);
         assert_eq!(queue.front().unwrap().path, "/page/second.mu");
@@ -313,7 +301,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert(dest_hash, link_id);
-        browser.pending.lock().unwrap().insert(
+        browser.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(
             link_id,
             VecDeque::from([PendingRequest {
                 path: "/page/index.mu".to_string(),
@@ -322,8 +310,8 @@ mod tests {
 
         browser.handle_link_closed(LinkId(link_id), Some("test".to_string()));
 
-        assert!(browser.pending.lock().unwrap().get(&link_id).is_none());
-        assert!(browser.link_to_dest.lock().unwrap().get(&link_id).is_none());
+        assert!(browser.pending.lock().unwrap_or_else(|e| e.into_inner()).get(&link_id).is_none());
+        assert!(browser.link_to_dest.lock().unwrap_or_else(|e| e.into_inner()).get(&link_id).is_none());
         assert!(browser
             .dest_to_link
             .lock()
@@ -339,5 +327,54 @@ mod tests {
             } => assert_eq!(got_dest, dest_hash),
             _ => panic!("expected link-closed event"),
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "events() called more than once")]
+    fn events_called_twice_panics() {
+        let browser = NomadBrowser::new();
+        let _first = browser.events();
+        let _second = browser.events();
+    }
+
+    #[test]
+    fn has_active_link_reflects_state() {
+        let browser = NomadBrowser::new();
+        let dest_hash = [0xaa; 16];
+        let link_id = [0xbb; 16];
+
+        assert!(!browser.has_active_link(&dest_hash));
+
+        browser
+            .dest_to_link
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(dest_hash, link_id);
+
+        assert!(browser.has_active_link(&dest_hash));
+    }
+
+    #[test]
+    fn handle_link_established_records_mapping() {
+        let browser = NomadBrowser::new();
+        let link_id = LinkId([0x11; 16]);
+        let dest_hash = [0x22; 16];
+
+        browser.handle_link_established(link_id, dest_hash);
+
+        assert!(browser.has_active_link(&dest_hash));
+        let link_to_dest = browser.link_to_dest.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(link_to_dest.get(&link_id.0), Some(&dest_hash));
+    }
+
+    #[test]
+    fn handle_response_ignores_unknown_link() {
+        let browser = NomadBrowser::new();
+        let _events = browser.events();
+
+        browser.handle_response(LinkId([0xff; 16]), [0u8; 16], vec![1, 2, 3]);
+
+        let pending = browser.pending.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(pending.is_empty());
     }
 }

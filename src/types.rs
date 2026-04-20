@@ -1,11 +1,5 @@
-pub const APP_NAME: &str = "nomadnetwork";
-pub const ASPECT: &str = "node";
-pub const FULL_ASPECT: &str = "nomadnetwork.node";
 pub const DEFAULT_ANNOUNCE_INTERVAL_SECS: u64 = 600;
 pub const MAX_DIRECTORY_ENTRIES: usize = 256;
-
-pub const NNN_DESTINATION_TYPE: &str = "nnn";
-pub const LXMF_DESTINATION_TYPE: &str = "lxmf";
 
 /// Configuration for creating a [`NomadNode`](crate::NomadNode).
 pub struct NodeConfig {

@@ -35,23 +35,20 @@ impl PageCache {
     pub fn set(&self, path: &str, content: Vec<u8>) {
         self.inner
             .write()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(path.to_string(), content);
     }
 
-    /// Read a page.  Called from sync request handlers on the RNS driver thread.
     pub fn get(&self, path: &str) -> Option<Vec<u8>> {
-        self.inner.read().unwrap().get(path).cloned()
+        self.inner.read().unwrap_or_else(|e| e.into_inner()).get(path).cloned()
     }
 
-    /// Remove a page from the cache.
     pub fn remove(&self, path: &str) {
-        self.inner.write().unwrap().remove(path);
+        self.inner.write().unwrap_or_else(|e| e.into_inner()).remove(path);
     }
 
-    /// List all cached paths.
     pub fn paths(&self) -> Vec<String> {
-        self.inner.read().unwrap().keys().cloned().collect()
+        self.inner.read().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect()
     }
 }
 
@@ -83,21 +80,6 @@ pub fn paginate_path(base_path: &str, page_num: usize) -> String {
     format!("{stem}/{page_num}.mu")
 }
 
-#[cfg(test)]
-fn base_path_from_paginated(path: &str) -> (String, Option<usize>) {
-    let stem = path.strip_suffix(".mu").unwrap_or(path);
-    if let Some(idx) = stem.rfind('/') {
-        let base_stem = &stem[..idx];
-        let page_str = &stem[idx + 1..];
-        if let Ok(page_num) = page_str.parse::<usize>() {
-            if (2..=MAX_PAGES_PER_FILE).contains(&page_num) {
-                return (format!("{base_stem}.mu"), Some(page_num));
-            }
-        }
-    }
-    (path.to_string(), None)
-}
-
 pub fn split_into_chunks(content: &str, target_bytes: usize) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut current = String::new();
@@ -119,8 +101,21 @@ pub fn split_into_chunks(content: &str, target_bytes: usize) -> Vec<String> {
     chunks
 }
 
-#[cfg(test)]
-fn build_paginated_page(
+pub fn base_path_from_paginated(path: &str) -> (String, Option<usize>) {
+    let stem = path.strip_suffix(".mu").unwrap_or(path);
+    if let Some(idx) = stem.rfind('/') {
+        let base_stem = &stem[..idx];
+        let page_str = &stem[idx + 1..];
+        if let Ok(page_num) = page_str.parse::<usize>() {
+            if (2..=MAX_PAGES_PER_FILE).contains(&page_num) {
+                return (format!("{base_stem}.mu"), Some(page_num));
+            }
+        }
+    }
+    (path.to_string(), None)
+}
+
+pub fn build_paginated_page(
     chunk: &str,
     page_num: usize,
     total_pages: usize,
@@ -183,7 +178,7 @@ impl NomadNode {
     /// responsible for populating the cache from its async context (e.g., a
     /// periodic timer in the main loop).
     pub fn new(
-        node: &Arc<RnsNode>,
+        node: Arc<RnsNode>,
         config: NodeConfig,
         paths: &[&str],
     ) -> Result<Self, NomadError> {
@@ -255,7 +250,7 @@ impl NomadNode {
 
         // Register a static test page — always works, useful for debugging.
         {
-            let static_page = {
+            let page_bytes = {
                 let mut p = MicronBuilder::new();
                 p.cache_directive(0);
                 p.heading(1, "Test Page");
@@ -265,7 +260,6 @@ impl NomadNode {
                 p.link("Back to index", &format!("{nomad_address}:/page/index.mu"));
                 p.build().into_bytes()
             };
-            let page_bytes = static_page.clone();
             node.register_request_handler(
                 "/page/test.mu",
                 None,
