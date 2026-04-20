@@ -401,33 +401,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    loop {
-        if let Some(ref rx) = watch_rx {
-            match rx.recv_timeout(std::time::Duration::from_secs(1)) {
-                Ok(Ok(event)) => {
-                    if let notify::EventKind::Modify(_)
-                    | notify::EventKind::Create(_)
-                    | notify::EventKind::Remove(_) = event.kind
-                    {
-                        populate_cache(&page_cache, &pages_dir, &nomad_address);
-                        info!("Page cache refreshed ({} pages)", page_cache.paths().len());
+    if let Some(rx) = watch_rx {
+        let watch_cancel = cancel.clone();
+        std::thread::spawn(move || {
+            loop {
+                if watch_cancel.is_cancelled() {
+                    break;
+                }
+                match rx.recv_timeout(std::time::Duration::from_secs(1)) {
+                    Ok(Ok(event)) => {
+                        if let notify::EventKind::Modify(_)
+                        | notify::EventKind::Create(_)
+                        | notify::EventKind::Remove(_) = event.kind
+                        {
+                            populate_cache(&page_cache, &pages_dir, &nomad_address);
+                            info!(
+                                "Page cache refreshed ({} pages)",
+                                page_cache.paths().len()
+                            );
+                        }
                     }
+                    Ok(Err(e)) => {
+                        warn!("File watch error: {}", e);
+                    }
+                    Err(_) => {}
                 }
-                Ok(Err(e)) => {
-                    warn!("File watch error: {}", e);
-                }
-                Err(_) => {}
             }
-        } else {
-            if cancel.is_cancelled() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
+        });
+    }
 
+    loop {
         if cancel.is_cancelled() {
             break;
         }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
     info!("Shutting down...");
