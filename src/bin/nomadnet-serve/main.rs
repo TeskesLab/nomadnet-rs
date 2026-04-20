@@ -390,26 +390,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     populate_cache(&page_cache, &pages_dir, &nomad_address);
     info!("Loaded {} pages", page_cache.paths().len());
 
-    let watch_rx = if args.watch {
+    if args.watch {
         use notify::{recommended_watcher, RecursiveMode, Watcher};
         let (tx, rx) = std::sync::mpsc::channel();
         let mut watcher = recommended_watcher(tx)?;
         watcher.watch(&pages_dir, RecursiveMode::Recursive)?;
         info!("Watching {} for changes", pages_dir.display());
-        Some(rx)
-    } else {
-        None
-    };
 
-    if let Some(rx) = watch_rx {
-        let watch_cancel = cancel.clone();
         std::thread::spawn(move || {
-            loop {
-                if watch_cancel.is_cancelled() {
-                    break;
-                }
-                match rx.recv_timeout(std::time::Duration::from_secs(1)) {
-                    Ok(Ok(event)) => {
+            let _watcher = watcher;
+            for result in rx.iter() {
+                match result {
+                    Ok(event) => {
                         if let notify::EventKind::Modify(_)
                         | notify::EventKind::Create(_)
                         | notify::EventKind::Remove(_) = event.kind
@@ -421,22 +413,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             );
                         }
                     }
-                    Ok(Err(e)) => {
+                    Err(e) => {
                         warn!("File watch error: {}", e);
                     }
-                    Err(_) => {}
                 }
             }
         });
     }
 
-    loop {
-        if cancel.is_cancelled() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    }
-
+    cancel.cancelled().await;
     info!("Shutting down...");
     Ok(())
 }
