@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use config::RnsConfig;
-use nomadnet_rs::{MicronBuilder, NodeConfig, NomadNode, PageCache};
+use nomadnet_rs::{FileCache, FileEntry, MicronBuilder, NodeConfig, NomadNode, PageCache};
 use rns_core::transport::types::IngressControlConfig;
 use rns_crypto::identity::Identity;
 use rns_net::{
@@ -33,6 +33,9 @@ struct Args {
 
     #[arg(short, long, default_value = ".")]
     pages_dir: String,
+
+    #[arg(short, long)]
+    files_dir: Option<String>,
 
     #[arg(long, default_value = "nomadnet-serve")]
     node_name: String,
@@ -303,6 +306,70 @@ fn scan_pages(pages_dir: &Path) -> Vec<String> {
     pages
 }
 
+fn scan_files(files_dir: &Path) -> Vec<String> {
+    let canonical_base = match files_dir.canonicalize() {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    fn recurse_collect(
+        base: &Path,
+        current: &Path,
+        out: &mut Vec<String>,
+        visited: &mut HashSet<PathBuf>,
+    ) {
+        if !visited.insert(current.to_path_buf()) {
+            return;
+        }
+
+        let entries = match std::fs::read_dir(current) {
+            Ok(e) => e,
+            Err(err) => {
+                warn!(
+                    "Failed to read files directory {}: {}",
+                    current.display(),
+                    err
+                );
+                return;
+            }
+        };
+
+        for entry in entries.flatten() {
+            let canonical = match entry.path().canonicalize() {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            if !canonical.starts_with(base) {
+                continue;
+            }
+
+            if canonical.is_dir() {
+                recurse_collect(base, &canonical, out, visited);
+                continue;
+            }
+
+            if !canonical.is_file() {
+                continue;
+            }
+
+            let name = canonical.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.starts_with('.') {
+                continue;
+            }
+
+            if let Ok(rel) = canonical.strip_prefix(base) {
+                out.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    let mut visited = HashSet::new();
+    recurse_collect(&canonical_base, &canonical_base, &mut files, &mut visited);
+    files.sort();
+    files
+}
+
 fn build_auto_index(pages: &[String], nomad_address: &str) -> Vec<u8> {
     let mut page = MicronBuilder::new();
     page.cache_directive(30);
@@ -358,6 +425,31 @@ fn populate_cache(cache: &PageCache, pages_dir: &Path, nomad_address: &str) {
     }
 }
 
+fn populate_file_cache(cache: &FileCache, files_dir: &Path) {
+    let files = scan_files(files_dir);
+    let desired_paths: HashSet<String> = files.iter().map(|f| format!("/file/{f}")).collect();
+
+    for existing in cache.paths() {
+        if existing.starts_with("/file/") && !desired_paths.contains(&existing) {
+            cache.remove(&existing);
+        }
+    }
+
+    for name in &files {
+        let file_path = files_dir.join(name);
+        if let Ok(content) = std::fs::read(&file_path) {
+            let req_path = format!("/file/{name}");
+            cache.set(
+                &req_path,
+                FileEntry {
+                    name: name.clone(),
+                    content,
+                },
+            );
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -376,6 +468,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let identity_path = expand_path(&args.identity);
     let storage_path = expand_path(&args.storage);
     let pages_dir = expand_path(&args.pages_dir);
+    let files_dir = args.files_dir.as_ref().map(|s| expand_path(s));
     let rns_config_path = args.rns_config.as_ref().map(|s| expand_path(s));
 
     let (identity, identity_prv, identity_pub) = load_or_create_identity(&identity_path)?;
@@ -387,6 +480,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !pages_dir.is_dir() {
         std::fs::create_dir_all(&pages_dir)?;
         info!("Created pages directory at {}", pages_dir.display());
+    }
+
+    if let Some(ref fdir) = files_dir {
+        if !fdir.is_dir() {
+            std::fs::create_dir_all(fdir)?;
+            info!("Created files directory at {}", fdir.display());
+        }
     }
 
     let interfaces = build_interfaces(&rns_config_path);
@@ -417,6 +517,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let page_path_refs: Vec<&str> = page_paths.iter().map(|s| s.as_str()).collect();
 
+    let file_paths: Vec<String> = match &files_dir {
+        Some(fdir) => scan_files(fdir)
+            .iter()
+            .map(|f| format!("/file/{f}"))
+            .collect(),
+        None => Vec::new(),
+    };
+    let file_path_refs: Vec<&str> = file_paths.iter().map(|s| s.as_str()).collect();
+
     let nomad_node = {
         let config = NodeConfig {
             identity_prv,
@@ -424,7 +533,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             node_name: args.node_name.clone(),
             announce_interval_secs: args.announce_interval,
         };
-        let nn = NomadNode::new(node.clone(), config, &page_path_refs)?;
+        let nn = NomadNode::new(node.clone(), config, &page_path_refs, &file_path_refs)?;
         nn.start_announcing(node.clone(), cancel.clone())?;
         nn
     };
@@ -438,12 +547,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     populate_cache(&page_cache, &pages_dir, &nomad_address);
     info!("Loaded {} pages", page_cache.paths().len());
 
+    let file_cache = nomad_node.file_cache();
+    if let Some(ref fdir) = files_dir {
+        populate_file_cache(&file_cache, fdir);
+        info!(
+            "Files directory: {} ({} files loaded)",
+            fdir.display(),
+            file_cache.paths().len()
+        );
+    }
+
     if args.watch {
         use notify::{recommended_watcher, RecursiveMode, Watcher};
         let (tx, rx) = std::sync::mpsc::channel();
         let mut watcher = recommended_watcher(tx)?;
         watcher.watch(&pages_dir, RecursiveMode::Recursive)?;
         info!("Watching {} for changes", pages_dir.display());
+
+        if let Some(ref fdir) = files_dir {
+            watcher.watch(fdir, RecursiveMode::Recursive)?;
+            info!("Watching {} for file changes", fdir.display());
+        }
 
         let watch_cancel = cancel.clone();
         std::thread::spawn(move || {
@@ -457,6 +581,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         {
                             populate_cache(&page_cache, &pages_dir, &nomad_address);
                             info!("Page cache refreshed ({} pages)", page_cache.paths().len());
+                            if let Some(ref fdir) = files_dir {
+                                populate_file_cache(&file_cache, fdir);
+                                info!("File cache refreshed ({} files)", file_cache.paths().len());
+                            }
                         }
                     }
                     Ok(Err(e)) => {

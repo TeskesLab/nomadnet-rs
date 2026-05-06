@@ -30,7 +30,7 @@
 //! };
 //!
 //! let paths = ["/page/index.mu", "/page/about.mu"];
-//! let nomad = NomadNode::new(node, config, &paths)?;
+//! let nomad = NomadNode::new(node, config, &paths, &[])?;
 //! let cache = nomad.page_cache();
 //!
 //! // Populate pages from your async context
@@ -69,12 +69,12 @@ pub mod micron;
 pub mod node;
 pub mod types;
 
-pub use browser::NomadBrowser;
+pub use browser::{parse_url_fields, NomadBrowser, ParsedUrlFields};
 pub use directory::{associated_lxmf_dest_hash, is_nomadnet_announce, NomadDirectory};
-pub use micron::MicronBuilder;
+pub use micron::{MicronBuilder, TableAlign};
 pub use node::{
-    base_path_from_paginated, build_paginated_page, paginate_path, split_into_chunks, NomadNode,
-    PageCache,
+    base_path_from_paginated, build_paginated_page, paginate_path, split_into_chunks, FileCache,
+    FileEntry, NomadNode, PageCache,
 };
 pub use node::{CHUNK_TARGET_BYTES, MAX_PAGES_PER_FILE, MAX_RESPONSE_BYTES};
 pub use types::DirectoryEntry;

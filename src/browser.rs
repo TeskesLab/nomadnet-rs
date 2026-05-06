@@ -10,6 +10,53 @@ use crate::types::{BrowseEvent, NomadError};
 
 struct PendingRequest {
     path: String,
+    data: Vec<u8>,
+}
+
+/// Parsed result of a URL containing backtick-delimited field data.
+///
+/// NomadNet URLs can embed form fields using the format
+/// `url\`field1=val1|field2=val2`. Fields are converted to
+/// `var_field1=val1` key-value pairs in the request data.
+pub struct ParsedUrlFields {
+    pub url: String,
+    pub fields: Vec<(String, String)>,
+}
+
+/// Parse backtick-delimited fields from a NomadNet URL.
+///
+/// # Examples
+///
+/// ```
+/// use nomadnet_rs::browser::parse_url_fields;
+///
+/// let result = parse_url_fields("abc123:/page/index.mu`name=Alice|age=30");
+/// assert_eq!(result.url, "abc123:/page/index.mu");
+/// assert_eq!(result.fields, vec![
+///     ("var_name".into(), "Alice".into()),
+///     ("var_age".into(), "30".into()),
+/// ]);
+/// ```
+pub fn parse_url_fields(url: &str) -> ParsedUrlFields {
+    match url.split_once('`') {
+        Some((base, fields_str)) => {
+            let fields = fields_str
+                .split('|')
+                .filter_map(|entry| {
+                    let (k, v) = entry.split_once('=')?;
+                    Some((format!("var_{k}"), v.to_string()))
+                })
+                .collect();
+            ParsedUrlFields {
+                url: base.to_string(),
+                fields,
+            }
+        }
+        None => ParsedUrlFields {
+            url: url.to_string(),
+            fields: Vec::new(),
+        },
+    }
 }
 
 /// Fetches pages from remote NomadNet nodes via RNS Link request/response.
@@ -85,29 +132,33 @@ impl NomadBrowser {
         };
         self.emit_event(event, "LinkEstablished");
 
-        let queued_paths = {
+        let queued: Vec<(String, Vec<u8>)> = {
             let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             pending
                 .get(&link_id.0)
-                .map(|q| q.iter().map(|req| req.path.clone()).collect::<Vec<_>>())
+                .map(|q| {
+                    q.iter()
+                        .map(|req| (req.path.clone(), req.data.clone()))
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default()
         };
 
-        if queued_paths.is_empty() {
+        if queued.is_empty() {
             return Ok(());
         }
 
         let Some(node) = node else {
             warn!(
                 "NomadBrowser: {} queued request(s) for link {} dropped — no node provided",
-                queued_paths.len(),
+                queued.len(),
                 link_id
             );
             return Ok(());
         };
 
-        for path in queued_paths {
-            node.send_request(link_id.0, &path, &[])
+        for (path, data) in queued {
+            node.send_request(link_id.0, &path, &data)
                 .map_err(NomadError::from)?;
         }
 
@@ -148,18 +199,34 @@ impl NomadBrowser {
         };
 
         debug!(
-            "NomadBrowser: page received dest={} path={} size={}",
+            "NomadBrowser: response received dest={} path={} size={}",
             hex::encode(dest_hash),
             path,
             data.len()
         );
 
-        let event = BrowseEvent::PageReceived {
-            dest_hash,
-            path,
-            content: data,
+        let is_file = path.starts_with("/file/");
+        let event = if is_file {
+            BrowseEvent::FileReceived {
+                dest_hash,
+                path,
+                content: data,
+            }
+        } else {
+            BrowseEvent::PageReceived {
+                dest_hash,
+                path,
+                content: data,
+            }
         };
-        self.emit_event(event, "PageReceived");
+        self.emit_event(
+            event,
+            if is_file {
+                "FileReceived"
+            } else {
+                "PageReceived"
+            },
+        );
     }
 
     pub fn handle_link_closed(&self, link_id: LinkId, reason: Option<String>) {
@@ -202,6 +269,25 @@ impl NomadBrowser {
         sig_pub_bytes: [u8; 32],
         path: &str,
     ) -> Result<(), NomadError> {
+        self.fetch_with_data(node, dest_hash, sig_pub_bytes, path, &[])
+    }
+
+    /// Fetch a page from a remote node with custom request data.
+    ///
+    /// If a link to `dest_hash` already exists the request is sent immediately;
+    /// otherwise a new link is created and the request is queued until the link
+    /// is established.
+    ///
+    /// The request `data` is sent as the RNS Link request payload.  Use
+    /// [`fetch_file`] for `/file/*` paths.
+    pub fn fetch_with_data(
+        &self,
+        node: &Arc<RnsNode>,
+        dest_hash: [u8; 16],
+        sig_pub_bytes: [u8; 32],
+        path: &str,
+        data: &[u8],
+    ) -> Result<(), NomadError> {
         {
             let dest_to_link = self.dest_to_link.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(link_id) = dest_to_link.get(&dest_hash) {
@@ -212,10 +298,11 @@ impl NomadBrowser {
                         .or_default()
                         .push_back(PendingRequest {
                             path: path.to_string(),
+                            data: data.to_vec(),
                         });
                 }
                 return node
-                    .send_request(*link_id, path, &[])
+                    .send_request(*link_id, path, data)
                     .map_err(NomadError::from);
             }
         }
@@ -241,10 +328,44 @@ impl NomadBrowser {
                 .or_default()
                 .push_back(PendingRequest {
                     path: path.to_string(),
+                    data: data.to_vec(),
                 });
         }
 
         Ok(())
+    }
+
+    /// Fetch a file from a remote node.
+    ///
+    /// Convenience wrapper around [`fetch_with_data`] for `/file/*` paths.
+    /// If `data` is `None`, any embedded field data in the path URL is parsed
+    /// using [`parse_url_fields`] and sent as request data.
+    pub fn fetch_file(
+        &self,
+        node: &Arc<RnsNode>,
+        dest_hash: [u8; 16],
+        sig_pub_bytes: [u8; 32],
+        path: &str,
+        data: Option<&[u8]>,
+    ) -> Result<(), NomadError> {
+        let request_data = match data {
+            Some(d) => d.to_vec(),
+            None => {
+                let parsed = parse_url_fields(path);
+                if parsed.fields.is_empty() {
+                    Vec::new()
+                } else {
+                    parsed
+                        .fields
+                        .iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect::<Vec<_>>()
+                        .join("\0")
+                        .into_bytes()
+                }
+            }
+        };
+        self.fetch_with_data(node, dest_hash, sig_pub_bytes, path, &request_data)
     }
 }
 
@@ -280,9 +401,11 @@ mod tests {
                 VecDeque::from([
                     PendingRequest {
                         path: "/page/first.mu".to_string(),
+                        data: Vec::new(),
                     },
                     PendingRequest {
                         path: "/page/second.mu".to_string(),
+                        data: Vec::new(),
                     },
                 ]),
             );
@@ -327,6 +450,7 @@ mod tests {
                 link_id,
                 VecDeque::from([PendingRequest {
                     path: "/page/index.mu".to_string(),
+                    data: Vec::new(),
                 }]),
             );
 
@@ -442,5 +566,103 @@ mod tests {
         }
 
         assert_eq!(count, 64);
+    }
+
+    #[test]
+    fn parse_url_fields_no_fields() {
+        let result = parse_url_fields("abc123:/page/index.mu");
+        assert_eq!(result.url, "abc123:/page/index.mu");
+        assert!(result.fields.is_empty());
+    }
+
+    #[test]
+    fn parse_url_fields_with_key_values() {
+        let result = parse_url_fields("abc123:/page/index.mu`name=Alice|age=30");
+        assert_eq!(result.url, "abc123:/page/index.mu");
+        assert_eq!(
+            result.fields,
+            vec![
+                ("var_name".into(), "Alice".into()),
+                ("var_age".into(), "30".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_url_fields_ignores_entries_without_equals() {
+        let result = parse_url_fields("abc123:/page/index.mu`invalid|name=Bob");
+        assert_eq!(result.url, "abc123:/page/index.mu");
+        assert_eq!(result.fields, vec![("var_name".into(), "Bob".into())]);
+    }
+
+    #[test]
+    fn file_path_emits_file_received() {
+        let browser = NomadBrowser::new();
+        let mut events = browser.events();
+        let link_id = LinkId([0x11; 16]);
+        let dest_hash = [0x22; 16];
+
+        browser
+            .link_to_dest
+            .lock()
+            .unwrap()
+            .insert(link_id.0, dest_hash);
+        browser
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                link_id.0,
+                VecDeque::from([PendingRequest {
+                    path: "/file/readme.txt".to_string(),
+                    data: Vec::new(),
+                }]),
+            );
+
+        browser.handle_response(link_id, [0u8; 16], b"file content".to_vec());
+
+        let event = events.try_recv().expect("expected event");
+        match event {
+            BrowseEvent::FileReceived { path, content, .. } => {
+                assert_eq!(path, "/file/readme.txt");
+                assert_eq!(content, b"file content");
+            }
+            _ => panic!("expected FileReceived event, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn page_path_emits_page_received() {
+        let browser = NomadBrowser::new();
+        let mut events = browser.events();
+        let link_id = LinkId([0x11; 16]);
+        let dest_hash = [0x22; 16];
+
+        browser
+            .link_to_dest
+            .lock()
+            .unwrap()
+            .insert(link_id.0, dest_hash);
+        browser
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                link_id.0,
+                VecDeque::from([PendingRequest {
+                    path: "/page/index.mu".to_string(),
+                    data: Vec::new(),
+                }]),
+            );
+
+        browser.handle_response(link_id, [0u8; 16], b"page content".to_vec());
+
+        let event = events.try_recv().expect("expected event");
+        match event {
+            BrowseEvent::PageReceived { path, .. } => {
+                assert_eq!(path, "/page/index.mu");
+            }
+            _ => panic!("expected PageReceived event, got {event:?}"),
+        }
     }
 }

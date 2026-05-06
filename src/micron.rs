@@ -1,5 +1,23 @@
 use std::fmt::{self, Write};
 
+/// Column alignment for micron tables.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableAlign {
+    Left,
+    Center,
+    Right,
+}
+
+impl TableAlign {
+    fn as_char(self) -> char {
+        match self {
+            TableAlign::Left => 'l',
+            TableAlign::Center => 'c',
+            TableAlign::Right => 'r',
+        }
+    }
+}
+
 /// Fluent builder for [NomadNet Micron markup](https://markqvist.github.io/Reticulum/network/nomadnet.html).
 ///
 /// Produces the text format consumed by NomadNet clients (MeshChat, etc.).
@@ -206,6 +224,96 @@ impl MicronBuilder {
 
     pub fn submit_link(&mut self, label: &str, url: &str) -> &mut Self {
         self.link_with_fields(label, url, &["*"])
+    }
+
+    /// Begin a micron table block. Optionally set column alignment and max
+    /// rendering width. Close the block with [`table_end`](Self::table_end).
+    ///
+    /// Generated markup: `` `t `` or `` `tc30 `` (with alignment + width).
+    pub fn table_start(
+        &mut self,
+        align: Option<TableAlign>,
+        max_width: Option<usize>,
+    ) -> &mut Self {
+        self.ensure_directives();
+        write!(self.inner, "`t").unwrap();
+        if let Some(a) = align {
+            write!(self.inner, "{}", a.as_char()).unwrap();
+        }
+        if let Some(w) = max_width {
+            write!(self.inner, "{w}").unwrap();
+        }
+        writeln!(self.inner).unwrap();
+        self
+    }
+
+    /// Append a pipe-delimited row to the current table block.
+    ///
+    /// The caller is responsible for providing the pipe characters and
+    /// alignment hints (e.g. `:---:`). This mirrors the markdown-like table
+    /// syntax used by NomadNet.
+    pub fn table_row(&mut self, columns: &[&str]) -> &mut Self {
+        self.ensure_directives();
+        let line = columns.join("|");
+        writeln!(self.inner, "|{line}|").unwrap();
+        self
+    }
+
+    /// Close a micron table block.
+    ///
+    /// Generated markup: `` `t `` (newline-terminated).
+    pub fn table_end(&mut self) -> &mut Self {
+        self.ensure_directives();
+        writeln!(self.inner, "`t").unwrap();
+        self
+    }
+
+    /// Insert a partial — an auto-updating page section fetched from a remote
+    /// node.
+    ///
+    /// - `url` — the page path to fetch (e.g. `abc123:/page/stats.mu`).
+    /// - `refresh_secs` — auto-refresh interval in seconds (`None` for no
+    ///   auto-refresh; values < 1.0 are ignored by clients).
+    /// - `fields` — additional field names passed to the partial request
+    ///   (pipe-delimited, can be empty).
+    ///
+    /// Refresh is caller-driven: the library emits the markup; the consumer
+    /// decides when to re-fetch.
+    ///
+    /// Generated markup: `` `{url`refresh`fields} ``.
+    pub fn partial(&mut self, url: &str, refresh_secs: Option<f64>, fields: &str) -> &mut Self {
+        self.ensure_directives();
+        write!(self.inner, "`{{{url}").unwrap();
+        if let Some(secs) = refresh_secs {
+            write!(self.inner, "`{secs}").unwrap();
+        }
+        if !fields.is_empty() {
+            write!(self.inner, "`{fields}").unwrap();
+        }
+        writeln!(self.inner, "}}").unwrap();
+        self
+    }
+
+    /// Set inline foreground color using a 6-digit hex truecolor value.
+    ///
+    /// Panics if `hex6` is not exactly 6 hexadecimal ASCII characters.
+    pub fn truecolor_fg(&mut self, hex6: &str) -> &mut Self {
+        assert!(
+            hex6.len() == 6 && hex6.bytes().all(|b| b.is_ascii_hexdigit()),
+            "truecolor_fg requires exactly 6 hex characters, got: {hex6:?}"
+        );
+        self.color_fg(hex6)
+    }
+
+    /// Set inline background color using a 6-digit hex truecolor value.
+    ///
+    /// Panics if `hex6` is not exactly 6 hexadecimal ASCII characters.
+    pub fn truecolor_bg(&mut self, hex6: &str) -> &mut Self {
+        assert!(
+            hex6.len() == 6 && hex6.bytes().all(|b| b.is_ascii_hexdigit()),
+            "truecolor_bg requires exactly 6 hex characters, got: {hex6:?}"
+        );
+        self.color_bg(hex6)
     }
 
     pub fn comment(&mut self, text: &str) -> &mut Self {
@@ -433,5 +541,118 @@ mod tests {
         b.heading(1, "Test");
         let display = format!("{b}");
         assert_eq!(display, "> Test\n");
+    }
+
+    #[test]
+    fn test_table_start_plain() {
+        let mut b = MicronBuilder::new();
+        b.table_start(None, None);
+        assert_eq!(b.build(), "`t\n");
+    }
+
+    #[test]
+    fn test_table_start_with_align() {
+        let mut b = MicronBuilder::new();
+        b.table_start(Some(TableAlign::Center), None);
+        assert_eq!(b.build(), "`tc\n");
+    }
+
+    #[test]
+    fn test_table_start_with_align_and_width() {
+        let mut b = MicronBuilder::new();
+        b.table_start(Some(TableAlign::Right), Some(40));
+        assert_eq!(b.build(), "`tr40\n");
+    }
+
+    #[test]
+    fn test_table_start_width_only() {
+        let mut b = MicronBuilder::new();
+        b.table_start(None, Some(80));
+        assert_eq!(b.build(), "`t80\n");
+    }
+
+    #[test]
+    fn test_table_row() {
+        let mut b = MicronBuilder::new();
+        b.table_row(&["Name", "Price", "Qty"]);
+        assert_eq!(b.build(), "|Name|Price|Qty|\n");
+    }
+
+    #[test]
+    fn test_table_row_with_alignment_hints() {
+        let mut b = MicronBuilder::new();
+        b.table_row(&[" ---- ", " :---: ", " --: "]);
+        assert_eq!(b.build(), "| ---- | :---: | --: |\n");
+    }
+
+    #[test]
+    fn test_table_full() {
+        let mut b = MicronBuilder::new();
+        b.table_start(Some(TableAlign::Center), Some(30));
+        b.table_row(&["Name", "Price", "Qty"]);
+        b.table_row(&[" ---- ", " :---: ", " --: "]);
+        b.table_row(&["Apple", "Free", "5"]);
+        b.table_end();
+        let s = b.build();
+        assert!(s.starts_with("`tc30\n"));
+        assert!(s.contains("|Name|Price|Qty|\n"));
+        assert!(s.contains("|Apple|Free|5|\n"));
+        assert!(s.ends_with("`t\n"));
+    }
+
+    #[test]
+    fn test_partial_url_only() {
+        let mut b = MicronBuilder::new();
+        b.partial("abc123:/page/stats.mu", None, "");
+        assert_eq!(b.build(), "`{abc123:/page/stats.mu}\n");
+    }
+
+    #[test]
+    fn test_partial_with_refresh() {
+        let mut b = MicronBuilder::new();
+        b.partial("abc123:/page/stats.mu", Some(5.0), "");
+        assert_eq!(b.build(), "`{abc123:/page/stats.mu`5}\n");
+    }
+
+    #[test]
+    fn test_partial_with_refresh_and_fields() {
+        let mut b = MicronBuilder::new();
+        b.partial("abc123:/page/stats.mu", Some(10.0), "channel|user");
+        assert_eq!(b.build(), "`{abc123:/page/stats.mu`10`channel|user}\n");
+    }
+
+    #[test]
+    fn test_truecolor_fg() {
+        let mut b = MicronBuilder::new();
+        b.truecolor_fg("ff5500");
+        assert!(b.build().contains("`Fff5500"));
+    }
+
+    #[test]
+    fn test_truecolor_bg() {
+        let mut b = MicronBuilder::new();
+        b.truecolor_bg("1a2b3c");
+        assert!(b.build().contains("`B1a2b3c"));
+    }
+
+    #[test]
+    #[should_panic(expected = "truecolor_fg requires exactly 6 hex characters")]
+    fn test_truecolor_fg_invalid_length() {
+        let mut b = MicronBuilder::new();
+        b.truecolor_fg("fff");
+    }
+
+    #[test]
+    #[should_panic(expected = "truecolor_bg requires exactly 6 hex characters")]
+    fn test_truecolor_bg_invalid_chars() {
+        let mut b = MicronBuilder::new();
+        b.truecolor_bg("gggggg");
+    }
+
+    #[test]
+    fn test_table_align_chars() {
+        assert_eq!(TableAlign::Left.as_char(), 'l');
+        assert_eq!(TableAlign::Center.as_char(), 'c');
+        assert_eq!(TableAlign::Right.as_char(), 'r');
     }
 }

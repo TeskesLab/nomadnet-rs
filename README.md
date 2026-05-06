@@ -9,10 +9,10 @@ Zero-application-logic dependencies — works with any RNS-based project.
 
 ## Features
 
-- **Node hosting** — serve `.mu` (Micron) pages over RNS Link request/response
+- **Node hosting** — serve `.mu` (Micron) pages and binary files over RNS Link request/response
 - **Node discovery** — track announced NomadNet nodes from RNS transport
-- **Node browsing** — fetch pages from remote NomadNet nodes via [`NomadBrowser`]
-- **Micron markup** — fluent builder for NomadNet page content
+- **Node browsing** — fetch pages and files from remote NomadNet nodes via [`NomadBrowser`]
+- **Micron markup** — fluent builder for NomadNet page content, including tables and partials
 
 ## `nomadnet-serve` Binary
 
@@ -31,16 +31,17 @@ cargo install nomadnet-rs --features serve --bin nomadnet-serve
 nomadnet-serve -p ./my-pages --rns-config ~/.config/reticulum/config --watch
 ```
 
-Drop `.mu` files in the pages directory. If no `index.mu` exists, one is auto-generated listing all available pages.
+Drop `.mu` files in the pages directory. If no `index.mu` exists, one is auto-generated listing all available pages. Use `--files-dir` to serve binary files alongside pages.
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-p, --pages-dir` | `.` | Directory containing `.mu` files |
+| `-f, --files-dir` | off | Directory containing binary files to serve |
 | `--rns-config` | `~/.config/reticulum/config` | RNS config file |
 | `--identity` | `~/.nomadnet-serve/identity` | Identity file path |
 | `--node-name` | `nomadnet-serve` | Node display name (for announces) |
 | `--announce-interval` | `600` | Announce interval in seconds |
-| `--watch` | off | Watch pages directory for changes |
+| `--watch` | off | Watch pages/files directories for changes |
 | `--verbose` | off | Enable debug logging |
 
 ## Quick Start (Library)
@@ -53,27 +54,29 @@ rns-crypto = "0.1"
 rns-net = "0.5"
 ```
 
-### Serve pages
+### Serve pages and files
 
 ```rust
 use std::sync::Arc;
-use nomadnet_rs::{NomadNode, NodeConfig, PageCache, MicronBuilder};
+use nomadnet_rs::{NomadNode, NodeConfig, PageCache, FileCache, MicronBuilder};
 use rns_net::RnsNode;
 
-let paths = ["/page/index.mu", "/page/about.mu"];
-let nomad = NomadNode::new(node.clone(), config, &paths)?;
-let cache = nomad.page_cache();
+let pages = ["/page/index.mu", "/page/about.mu"];
+let files = ["/file/readme.txt", "/file/data.json"];
+let nomad = NomadNode::new(node.clone(), config, &pages, &files)?;
+let page_cache = nomad.page_cache();
+let file_cache = nomad.file_cache();
 
 let mut page = MicronBuilder::new();
 page.heading(1, "Hello from NomadNet");
 page.text("Served via Reticulum.");
-cache.set("/page/index.mu", page.build().into_bytes());
+page_cache.set("/page/index.mu", page.build().into_bytes());
 ```
 
 ### Build a Micron page
 
 ```rust
-use nomadnet_rs::MicronBuilder;
+use nomadnet_rs::{MicronBuilder, TableAlign};
 
 let mut page = MicronBuilder::new();
 page.cache_directive(300);
@@ -82,7 +85,23 @@ page.divider();
 page.bold("Status: ");
 page.text("online");
 page.blank_line();
-page.link("Index", "aabbccdd:/page/index.mu");
+
+// Table
+page.table_start(Some(TableAlign::Center), Some(40));
+page.table_row(&["Name", "Value"]);
+page.table_row(&["----", "-----"]);
+page.table_row(&["Users", "5"]);
+page.table_end();
+
+page.blank_line();
+
+// Auto-updating partial
+page.partial("aabbccdd:/page/stats.mu", Some(10.0), "channel=general");
+
+// Truecolor
+page.truecolor_fg("ff5500");
+page.text("Bright orange text");
+page.reset_fg();
 ```
 
 ### Discover nodes
@@ -110,9 +129,17 @@ let mut events = browser.events();
 
 browser.fetch(&node, dest_hash, sig_pub, "/page/index.mu")?;
 
+// Fetch with request data
+browser.fetch_with_data(&node, dest_hash, sig_pub, "/page/search.mu", b"query=hello")?;
+
+// Fetch a file
+browser.fetch_file(&node, dest_hash, sig_pub, "/file/readme.txt", None)?;
+
 // In your event loop:
-if let Some(BrowseEvent::PageReceived { content, .. }) = events.recv().await {
-    println!("Received {} bytes", content.len());
+match events.recv().await {
+    Some(BrowseEvent::PageReceived { content, .. }) => { /* handle page */ },
+    Some(BrowseEvent::FileReceived { content, path, .. }) => { /* handle file */ },
+    _ => {}
 }
 ```
 
@@ -120,18 +147,20 @@ if let Some(BrowseEvent::PageReceived { content, .. }) = events.recv().await {
 
 | Module | Description |
 |--------|-------------|
-| [`node`] | `NomadNode` + `PageCache` — serve pages via RNS Link request/response |
-| [`micron`] | `MicronBuilder` — fluent API for NomadNet page markup |
+| [`node`] | `NomadNode` + `PageCache` + `FileCache` — serve pages and files via RNS Link request/response |
+| [`micron`] | `MicronBuilder` + `TableAlign` — fluent API for NomadNet page markup |
 | [`directory`] | `NomadDirectory` — track discovered NomadNet nodes from announces |
-| [`browser`] | `NomadBrowser` — fetch pages from remote nodes |
+| [`browser`] | `NomadBrowser` — fetch pages and files from remote nodes, with URL field parsing |
 | [`types`] | Shared types: `NodeConfig`, `BrowseEvent`, `DirectoryEntry`, `NomadError` |
 
 ## Architecture Notes
 
 - NomadNet uses RNS Link request/response (not LXMF messaging) on aspect `nomadnetwork.node`
-- Page handlers run synchronously on the RNS driver thread — use `PageCache` to decouple async page generation from sync request handling
+- Page handlers run synchronously on the RNS driver thread — use `PageCache`/`FileCache` to decouple async page generation from sync request handling
 - A built-in `/page/test.mu` handler is always registered for connectivity debugging
-- Cache misses return auto-generated 404 pages
+- Cache misses for pages return auto-generated 404 pages; file cache misses return no response
+- `NomadBrowser` distinguishes page vs file responses via the path prefix (`/page/` vs `/file/`)
+- URL field parsing (`url\`field=val`) is supported via `parse_url_fields()` and `fetch_with_data()`
 
 ## License
 

@@ -30,8 +30,14 @@ pub struct DirectoryEntry {
 }
 
 /// Events emitted by [`NomadBrowser`](crate::NomadBrowser).
+#[derive(Debug)]
 pub enum BrowseEvent {
     PageReceived {
+        dest_hash: [u8; 16],
+        path: String,
+        content: Vec<u8>,
+    },
+    FileReceived {
         dest_hash: [u8; 16],
         path: String,
         content: Vec<u8>,

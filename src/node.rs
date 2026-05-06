@@ -10,6 +10,66 @@ use tracing::{debug, info, warn};
 use crate::micron::MicronBuilder;
 use crate::types::{NodeConfig, NomadError};
 
+/// Metadata for a served file.
+#[derive(Clone, Debug)]
+pub struct FileEntry {
+    pub content: Vec<u8>,
+    pub name: String,
+}
+
+/// Thread-safe file cache for NomadNet binary file serving.
+///
+/// Works like [`PageCache`] but stores [`FileEntry`] structs with file names.
+#[derive(Clone, Debug)]
+pub struct FileCache {
+    inner: Arc<RwLock<HashMap<String, FileEntry>>>,
+}
+
+impl FileCache {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    pub fn set(&self, path: &str, entry: FileEntry) {
+        self.inner
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(path.to_string(), entry);
+    }
+
+    pub fn get(&self, path: &str) -> Option<FileEntry> {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(path)
+            .cloned()
+    }
+
+    pub fn remove(&self, path: &str) {
+        self.inner
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(path);
+    }
+
+    pub fn paths(&self) -> Vec<String> {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect()
+    }
+}
+
+impl Default for FileCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub const MAX_RESPONSE_BYTES: usize = 350;
 pub const MAX_PAGES_PER_FILE: usize = 200;
 pub const CHUNK_TARGET_BYTES: usize = 220;
@@ -177,6 +237,7 @@ pub struct NomadNode {
     node_name: String,
     announce_interval_secs: u64,
     page_cache: PageCache,
+    file_cache: FileCache,
 }
 
 impl NomadNode {
@@ -189,7 +250,12 @@ impl NomadNode {
     /// Handlers read from the `PageCache` synchronously.  The application is
     /// responsible for populating the cache from its async context (e.g., a
     /// periodic timer in the main loop).
-    pub fn new(node: Arc<RnsNode>, config: NodeConfig, paths: &[&str]) -> Result<Self, NomadError> {
+    pub fn new(
+        node: Arc<RnsNode>,
+        config: NodeConfig,
+        paths: &[&str],
+        file_paths: &[&str],
+    ) -> Result<Self, NomadError> {
         let identity = Identity::from_private_key(&config.identity_prv);
         let identity_hash_bytes = *identity.hash();
         let identity_hash = IdentityHash(identity_hash_bytes);
@@ -285,11 +351,45 @@ impl NomadNode {
             info!("NomadNode: registered TEST handler for /page/test.mu");
         }
 
+        let file_cache = FileCache::new();
+        for fpath in file_paths {
+            let fc = file_cache.clone();
+            let fpath_owned = fpath.to_string();
+            node.register_request_handler(
+                fpath,
+                None,
+                move |link_id, req_path, _data, _remote_identity| {
+                    info!(
+                        "NomadNode: file request on link {:02x?} for path={}",
+                        &link_id[..4],
+                        req_path
+                    );
+                    match fc.get(&fpath_owned) {
+                        Some(entry) => {
+                            info!(
+                                "NomadNode: serving file {} ({} bytes)",
+                                entry.name,
+                                entry.content.len()
+                            );
+                            Some(entry.content.clone())
+                        }
+                        None => {
+                            warn!("NomadNode: file cache miss for {}", fpath_owned);
+                            None
+                        }
+                    }
+                },
+            )
+            .map_err(|_| NomadError::DestinationRegistrationFailed)?;
+            info!("NomadNode: registered FILE handler for {}", fpath);
+        }
+
         info!(
-            "NomadNode initialized: dest={} name=\"{}\" ({} pages + test)",
+            "NomadNode initialized: dest={} name=\"{}\" ({} pages + test, {} files)",
             hex::encode(dest_hash),
             config.node_name,
-            paths.len()
+            paths.len(),
+            file_paths.len()
         );
 
         Ok(Self {
@@ -299,6 +399,7 @@ impl NomadNode {
             node_name: config.node_name,
             announce_interval_secs: config.announce_interval_secs,
             page_cache,
+            file_cache,
         })
     }
 
@@ -318,6 +419,12 @@ impl NomadNode {
     /// from its async main loop.
     pub fn page_cache(&self) -> PageCache {
         self.page_cache.clone()
+    }
+
+    /// Get a clone of the file cache.  The binary uses this to populate files
+    /// from its async main loop.
+    pub fn file_cache(&self) -> FileCache {
+        self.file_cache.clone()
     }
 
     pub fn start_announcing(
